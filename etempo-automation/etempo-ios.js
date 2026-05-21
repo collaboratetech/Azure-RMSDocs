@@ -5,13 +5,12 @@
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const SERVER     = "https://philipmorris.softmachine.es:440";
-const LOGIN_URL  = SERVER + "/api/v1/login";   // confirmed working
 const USERNAME   = "William.hill@pmi.com";
 const PASSWORD   = "50552441";
 const WEEKLY_HOURS = 40;
 
 // Set to true to run endpoint discovery instead of filling the timesheet
-const DISCOVER_MODE = true;
+const DISCOVER_MODE = false;
 
 // Pre-login discovery paths — GETted before login to find company/tenant info
 const PRE_LOGIN_PATHS = [
@@ -108,53 +107,73 @@ async function preLoginDiscover() {
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 
+async function tryLogin(url, body, authHeader) {
+  const req = new Request(url);
+  req.method = "POST";
+  req.headers = {
+    "Accept":       "application/json",
+    "Content-Type": "application/json",
+    "User-Agent":   "TempoMobile/4.0",
+  };
+  if (authHeader) req.headers["Authorization"] = authHeader;
+  if (body) req.body = JSON.stringify(body);
+  try {
+    const raw    = await req.loadString();
+    const status = req.response.statusCode;
+    let d;
+    try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
+    console.log(`${status} ${url.replace(SERVER,"")} ${authHeader?"auth":"no-auth"} ${body?JSON.stringify(body).slice(0,40):"no-body"} → ${raw.slice(0,60)}`);
+    return { status, d, raw };
+  } catch (_) { return null; }
+}
+
 async function login() {
-  // Try every plausible credential shape the API might expect
   const userShort = USERNAME.split("@")[0];   // "William.hill"
-  const attempts = [
-    { username: USERNAME,   password: PASSWORD },
-    { username: userShort,  password: PASSWORD },
-    { Username: USERNAME,   Password: PASSWORD },
-    { Username: userShort,  Password: PASSWORD },
-    { user:     USERNAME,   pass:     PASSWORD },
-    { user:     userShort,  pass:     PASSWORD },
-    { login:    USERNAME,   password: PASSWORD },
-    { login:    userShort,  password: PASSWORD },
-    // With explicit company fields (common in multi-tenant eTempo)
-    { username: USERNAME,  password: PASSWORD, empresa: "pmi" },
-    { username: USERNAME,  password: PASSWORD, company: "philipmorris" },
-    { username: USERNAME,  password: PASSWORD, client:  "pmi" },
-    { username: userShort, password: PASSWORD, empresa: "pmi" },
+  const basicFull  = "Basic " + btoa(`${USERNAME}:${PASSWORD}`);
+  const basicShort = "Basic " + btoa(`${userShort}:${PASSWORD}`);
+
+  const loginUrls = [
+    SERVER + "/api/v3/login",
+    SERVER + "/api/v1/login",
+    SERVER + "/api/v3/account/login",
+    SERVER + "/api/v3/authenticate",
+    SERVER + "/api/v3/auth",
+    SERVER + "/api/v3/users/login",
+    SERVER + "/api/v3/session",
   ];
 
-  for (const body of attempts) {
-    const req = new Request(LOGIN_URL);
-    req.method = "POST";
-    req.headers = {
-      "Accept":        "application/json",
-      "Content-Type":  "application/json",
-      "User-Agent":    "TempoMobile/4.0",
-      "Authorization": "Basic " + btoa(`${USERNAME}:${PASSWORD}`),
-    };
-    req.body = JSON.stringify(body);
-    try {
-      const raw    = await req.loadString();
-      const status = req.response.statusCode;
-      let d;
-      try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
+  const attempts = [];
 
-      // Show what each attempt returns (status + first 200 chars)
-      console.log(`${status} [${JSON.stringify(body)}] → ${raw.slice(0, 100)}`);
+  for (const url of loginUrls) {
+    // 1. Basic auth header only, no body
+    attempts.push({ url, body: null,                                     auth: basicFull  });
+    attempts.push({ url, body: null,                                     auth: basicShort });
+    // 2. Body only, no auth header
+    attempts.push({ url, body: { username: userShort, password: PASSWORD }, auth: null });
+    attempts.push({ url, body: { username: USERNAME,  password: PASSWORD }, auth: null });
+    // 3. Both header and body
+    attempts.push({ url, body: { username: userShort, password: PASSWORD }, auth: basicShort });
+    attempts.push({ url, body: { username: USERNAME,  password: PASSWORD }, auth: basicFull  });
+  }
 
-      if (status >= 200 && status < 300) {
-        const token = d.access_token || d.token || d.Token ||
-                      d.accessToken  || d.jwt   || d.id_token ||
-                      d.sessionToken || d.authToken || d.SessionId ||
-                      d.sessionId    || d.SessionID;
-        if (token) return { token, loginData: d };
-        return { token: null, loginData: d, raw };
-      }
-    } catch (_) {}
+  for (const { url, body, auth } of attempts) {
+    const r = await tryLogin(url, body, auth);
+    if (!r) continue;
+    if (r.status >= 200 && r.status < 300) {
+      const d = r.d;
+      const token = d.access_token || d.token || d.Token ||
+                    d.accessToken  || d.jwt   || d.id_token ||
+                    d.sessionToken || d.authToken ||
+                    d.SessionId    || d.sessionId || d.SessionID;
+      if (token) return { token, loginData: d };
+
+      const a = new Alert();
+      a.title   = `200 at ${url.replace(SERVER,"")}`;
+      a.message = r.raw.slice(0, 500);
+      a.addAction("OK");
+      await a.present();
+      return { token: null, loginData: d, raw: r.raw };
+    }
   }
   return null;
 }
