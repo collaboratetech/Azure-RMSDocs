@@ -2,39 +2,28 @@
 // ─────────────────────────────────────────────────────
 // Install: https://scriptable.app  (free on App Store)
 // Usage: tap the script, or add a widget, or run via Shortcuts on a schedule.
-//
-// What it does: fills the current week (Mon–Fri) with 8 h/day (40 h total)
-// and saves the timesheet via the eTempo mobile API.
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const SERVER   = "https://philipmorris.softmachine.es:440";
-const MOB_BASE = SERVER;                        // mobile API root (port 440)
-const USERNAME = "William.hill@pmi.com";
-const PASSWORD = "50552441";
+const SERVER     = "https://philipmorris.softmachine.es:440";
+const LOGIN_URL  = SERVER + "/api/v1/login";   // confirmed working
+const USERNAME   = "William.hill@pmi.com";
+const PASSWORD   = "50552441";
 const WEEKLY_HOURS = 40;
 
-// ── Login endpoint candidates (tried in order) ────────────────────────────────
-const LOGIN_PATHS = [
-  "/api/v1/login",
-  "/api/login",
-  "/api/v1/account/login",
-  "/api/account/login",
-  "/api/v1/auth/login",
-  "/api/v1/FormsLogin",
-  "/api/FormsLogin",
-  "/api/v1/users/login",
-  "/api/v9/login",
-  "/connect/token",
-  "/login",
-];
+// Set to true to run endpoint discovery instead of filling the timesheet
+const DISCOVER_MODE = false;
 
-// Timesheet write endpoint candidates
+// Timesheet endpoint candidates (GETted first to discover structure)
 const TIMESHEET_PATHS = [
+  "/api/v1/imputaciones",
+  "/api/v1/jornadas",
   "/api/v1/timesheets",
   "/api/v1/timesheet",
   "/api/v1/workdays",
-  "/api/v1/jornadas",
-  "/api/v1/imputaciones",
+  "/api/v1/entries",
+  "/api/v1/timeentries",
+  "/api/v1/horas",
+  "/api/v1/fichajes",
   "/api/timesheets",
 ];
 
@@ -42,8 +31,8 @@ const TIMESHEET_PATHS = [
 
 function thisMonday() {
   const d = new Date();
-  const day = d.getDay();                          // 0=Sun, 1=Mon …
-  const diff = day === 0 ? -6 : 1 - day;          // go back to Monday
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
   d.setDate(d.getDate() + diff);
   d.setHours(0, 0, 0, 0);
   return d;
@@ -56,177 +45,196 @@ function dateStr(d) {
   return `${y}-${m}-${dd}`;
 }
 
-function basicAuth(user, pass) {
-  return "Basic " + btoa(`${user}:${pass}`);
-}
-
-async function apiPost(url, body, token) {
-  const isForm = body && body.grant_type;
+async function apiRequest(method, url, body, token) {
   const req = new Request(url);
-  req.method = "POST";
+  req.method = method;
   req.headers = {
-    "Accept":       "application/json",
-    "Content-Type": isForm ? "application/x-www-form-urlencoded" : "application/json",
-    "User-Agent":   "TempoMobile/4.0",
-    "Authorization": token ? `Bearer ${token}` : basicAuth(USERNAME, PASSWORD),
+    "Accept":        "application/json",
+    "Content-Type":  "application/json",
+    "User-Agent":    "TempoMobile/4.0",
+    "Authorization": `Bearer ${token}`,
   };
-  if (isForm) {
-    req.body = Object.entries(body).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
-  } else {
-    req.body = JSON.stringify(body);
-  }
+  if (body) req.body = JSON.stringify(body);
   try {
-    const resp = await req.loadJSON();
-    return { ok: true, data: resp };
+    // loadString so we always get the raw response even on non-JSON
+    const raw  = await req.loadString();
+    const status = req.response.statusCode;
+    let data = null;
+    try { data = JSON.parse(raw); } catch (_) { data = raw; }
+    return { ok: status >= 200 && status < 300, status, data, raw };
   } catch (e) {
-    return { ok: false, error: e.message };
-  }
-}
-
-async function apiPut(url, body, token) {
-  const req = new Request(url);
-  req.method = "PUT";
-  req.headers = {
-    "Accept":       "application/json",
-    "Content-Type": "application/json",
-    "User-Agent":   "TempoMobile/4.0",
-    "Authorization": token ? `Bearer ${token}` : basicAuth(USERNAME, PASSWORD),
-  };
-  req.body = JSON.stringify(body);
-  try {
-    const resp = await req.loadJSON();
-    return { ok: true, data: resp };
-  } catch (e) {
-    return { ok: false, error: e.message };
+    return { ok: false, status: 0, data: null, raw: e.message };
   }
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 
 async function login() {
-  const payloads = [
-    { username: USERNAME, password: PASSWORD },
-    { Username: USERNAME, Password: PASSWORD },
-    { user:     USERNAME, pass:     PASSWORD },
-    { login:    USERNAME, password: PASSWORD },
-    { grant_type: "password", username: USERNAME, password: PASSWORD,
-      scope: "openid offline_access", client_id: "TempoMobile" },
-  ];
-
-  for (const path of LOGIN_PATHS) {
-    const url = MOB_BASE + path;
-    for (const payload of payloads) {
-      const result = await apiPost(url, payload, null);
-      if (result.ok) {
-        const d = result.data;
-        const token = d.access_token || d.token || d.Token ||
-                      d.accessToken  || d.jwt   || d.id_token;
-        if (token) {
-          const alert = new Alert();
-          alert.title = "✅ Endpoint found!";
-          alert.message = url;
-          alert.addAction("OK");
-          await alert.present();
-          return { token, endpoint: url };
-        }
-        const alert = new Alert();
-        alert.title = "✅ Endpoint found (session auth)";
-        alert.message = url;
-        alert.addAction("OK");
-        await alert.present();
-        return { token: "session", endpoint: url };
-      }
-    }
+  const req = new Request(LOGIN_URL);
+  req.method = "POST";
+  req.headers = {
+    "Accept":       "application/json",
+    "Content-Type": "application/json",
+    "User-Agent":   "TempoMobile/4.0",
+    "Authorization": "Basic " + btoa(`${USERNAME}:${PASSWORD}`),
+  };
+  req.body = JSON.stringify({ username: USERNAME, password: PASSWORD });
+  try {
+    const raw    = await req.loadString();
+    const status = req.response.statusCode;
+    const d      = JSON.parse(raw);
+    const token  = d.access_token || d.token || d.Token ||
+                   d.accessToken  || d.jwt   || d.id_token;
+    if (token) return { token, loginData: d };
+    // No token field — return entire object so we can inspect it
+    return { token: null, loginData: d, raw };
+  } catch (e) {
+    return null;
   }
-  return null;
+}
+
+// ── Discovery: GET every candidate endpoint and show what comes back ──────────
+
+async function discoverEndpoints(token) {
+  const monday  = thisMonday();
+  const results = [];
+
+  for (const path of TIMESHEET_PATHS) {
+    const url = SERVER + path;
+    const r   = await apiRequest("GET", url, null, token);
+    results.push({ path, status: r.status, preview: JSON.stringify(r.data).slice(0, 120) });
+  }
+
+  // Show results in an alert (scroll through them)
+  const lines = results.map(r => `${r.status}  ${r.path}\n     ${r.preview}`).join("\n\n");
+  const a = new Alert();
+  a.title   = "Endpoint Discovery";
+  a.message = lines || "No responses";
+  a.addAction("OK");
+  await a.present();
+  return results;
 }
 
 // ── Fill timesheet ────────────────────────────────────────────────────────────
 
-async function fillWeek(token) {
-  const daily = Math.floor(WEEKLY_HOURS / 5);
-  const extra = WEEKLY_HOURS % 5;
+async function fillWeek(token, loginData) {
+  const daily  = Math.floor(WEEKLY_HOURS / 5);
   const monday = thisMonday();
   const results = [];
 
-  for (let i = 0; i < 5; i++) {
-    const day = new Date(monday);
-    day.setDate(monday.getDate() + i);
-    const hours = daily + (i === 0 ? extra : 0);
-    const ds    = dateStr(day);
-
-    const payloads = [
+  // Build every plausible payload shape from what we know about the login response
+  function buildPayloads(ds, hours) {
+    const base = [
       { date: ds,      hours },
       { fecha: ds,     horas: hours },
       { Date: ds,      Hours: hours },
-      { workDate: ds,  hours, taskId: null },
+      { workDate: ds,  hours },
+      { day: ds,       hours },
     ];
+    // If login returned employee/user ID, include it in payloads
+    const uid = loginData && (loginData.userId || loginData.UserId ||
+                               loginData.employeeId || loginData.id);
+    if (uid) {
+      base.push({ date: ds, hours, userId: uid });
+      base.push({ fecha: ds, horas: hours, empleadoId: uid });
+    }
+    return base;
+  }
 
+  for (let i = 0; i < 5; i++) {
+    const day  = new Date(monday);
+    day.setDate(monday.getDate() + i);
+    const ds   = dateStr(day);
+    const hours = daily;
+
+    const payloads = buildPayloads(ds, hours);
     let written = false;
+
     outer:
     for (const tsPath of TIMESHEET_PATHS) {
-      const url = MOB_BASE + tsPath;
+      const url = SERVER + tsPath;
       for (const payload of payloads) {
-        // Try POST then PUT
-        for (const fn of [apiPost, apiPut]) {
-          const r = await fn(url, payload, token);
+        for (const method of ["POST", "PUT"]) {
+          const r = await apiRequest(method, url, payload, token);
           if (r.ok) {
-            console.log(`✓ ${ds} → ${hours} h`);
-            results.push({ date: ds, hours, ok: true });
+            console.log(`✓ ${ds} ${hours}h via ${method} ${tsPath}`);
+            results.push({ date: ds, hours, ok: true, path: tsPath, method });
             written = true;
             break outer;
           }
         }
       }
     }
+
     if (!written) {
-      console.log(`✗ Could not write ${ds}`);
+      console.log(`✗ ${ds} — no endpoint accepted the submission`);
       results.push({ date: ds, hours, ok: false });
     }
   }
   return results;
 }
 
-// ── Notification helper ───────────────────────────────────────────────────────
-
-function notify(title, body) {
-  const n = new Notification();
-  n.title = title;
-  n.body  = body;
-  n.schedule();
-}
-
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log("eTempo Timesheet Automation starting …");
-  console.log("Week: " + dateStr(thisMonday()));
-
   // Step 1 — Login
   const loginResult = await login();
   if (!loginResult) {
     const a = new Alert();
-    a.title = "❌ Login failed";
-    a.message = "No endpoint responded on " + SERVER + "\nCheck your connection.";
+    a.title   = "❌ Login failed";
+    a.message = LOGIN_URL + "\nCheck your connection.";
     a.addAction("OK");
     await a.present();
     Script.complete();
     return;
   }
 
-  // Step 2 — Fill week
-  const results = await fillWeek(loginResult.token);
-  const ok    = results.filter(r => r.ok).length;
-  const total = results.length;
+  if (!loginResult.token) {
+    // Login responded but no token — show what came back so we can debug
+    const a = new Alert();
+    a.title   = "⚠️ Login OK but no token";
+    a.message = JSON.stringify(loginResult.loginData, null, 2).slice(0, 400);
+    a.addAction("OK");
+    await a.present();
+    Script.complete();
+    return;
+  }
 
-  if (ok === total) {
-    const msg = `Week of ${dateStr(thisMonday())} filled: ${WEEKLY_HOURS} h ✓`;
-    console.log(msg);
-    notify("eTempo ✓", msg);
+  const { token, loginData } = loginResult;
+
+  // Step 2a — Discovery mode: show what each endpoint returns
+  if (DISCOVER_MODE) {
+    await discoverEndpoints(token);
+    Script.complete();
+    return;
+  }
+
+  // Step 2b — Fill the week
+  const results  = await fillWeek(token, loginData);
+  const okCount  = results.filter(r => r.ok).length;
+  const total    = results.length;
+
+  if (okCount === total) {
+    const a = new Alert();
+    a.title   = "✅ Timesheet filled";
+    a.message = `Week of ${dateStr(thisMonday())}\n${WEEKLY_HOURS} h submitted (${okCount}/${total} days)\nEndpoint: ${results[0]?.path}`;
+    a.addAction("OK");
+    await a.present();
+  } else if (okCount > 0) {
+    const failed = results.filter(r => !r.ok).map(r => r.date).join(", ");
+    const a = new Alert();
+    a.title   = "⚠️ Partial submission";
+    a.message = `${okCount}/${total} days written.\nFailed: ${failed}`;
+    a.addAction("OK");
+    await a.present();
   } else {
-    const msg = `Partial: ${ok}/${total} days written. Check console for details.`;
-    console.warn(msg);
-    notify("eTempo ⚠️", msg);
+    // Nothing worked — switch to discovery mode automatically
+    const a = new Alert();
+    a.title   = "❌ Submission failed";
+    a.message = "Could not write to any timesheet endpoint.\nSwitching to discovery mode…";
+    a.addAction("OK");
+    await a.present();
+    await discoverEndpoints(token);
   }
 
   Script.complete();
