@@ -1,269 +1,194 @@
 // eTempo Timesheet Automation — iOS Scriptable Script
 // ─────────────────────────────────────────────────────
 // Install: https://scriptable.app  (free on App Store)
-// Usage: tap the script, or add a widget, or run via Shortcuts on a schedule.
+// Tap to run, or schedule via iOS Shortcuts.
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const SERVER     = "https://philipmorris.softmachine.es:440";
-const USERNAME   = "william.hill@pmi.com";
-const PASSWORD   = "50552441";
-const WEEKLY_HOURS = 40;
+const SERVER   = "https://philipmorris.softmachine.es:440";
+const USERNAME = "william.hill@pmi.com";
+const PASSWORD = "50552441";
+const USER_ID  = 2956;                 // confirmed from /api/perfiles/2956
+const DAILY_HOURS = 8;                 // hours per day (Mon–Fri)
 
-// Set to true to run endpoint discovery instead of filling the timesheet
-const DISCOVER_MODE = false;
+// Work hours — adjust to match your normal schedule
+const START_HOUR = 9;                  // 09:00
+const END_HOUR   = 17;                 // 17:00  (9 + 8 = 17)
 
-// Pre-login discovery paths
-const PRE_LOGIN_PATHS = [
-  "/api/version",
-  "/api/v1/version",
-  "/api/empresas",
-  "/api/clientes",
-  "/api/config",
-];
+// Set true to inspect existing marcajes before writing anything
+const INSPECT_ONLY = false;
 
-// API uses /api/ prefix (no version), Spanish endpoint names
-// User ID confirmed: 2956  (from /api/perfiles/2956 captured via Proxyman)
-const USER_ID = 2956;
-
-// Timesheet endpoint candidates — Spanish names, no version prefix
-const TIMESHEET_PATHS = [
-  `/api/perfiles/${USER_ID}/imputaciones`,
-  `/api/perfiles/${USER_ID}/jornadas`,
-  `/api/perfiles/${USER_ID}/horas`,
-  `/api/perfiles/${USER_ID}/fichajes`,
-  `/api/imputaciones`,
-  `/api/jornadas`,
-  `/api/horas`,
-  `/api/fichajes`,
-  `/api/timesheets`,
-];
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Date helpers ──────────────────────────────────────────────────────────────
 
 function thisMonday() {
   const d = new Date();
   const day = d.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
+  d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day));
   d.setHours(0, 0, 0, 0);
   return d;
 }
 
-function dateStr(d) {
-  const y  = d.getFullYear();
-  const m  = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
+// .NET round-trip format: 2026-05-08T09:00:00.0000000Z
+function dotnetDate(d) {
+  const pad = (n, w=2) => String(n).padStart(w, "0");
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}T` +
+         `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}.0000000Z`;
 }
 
-async function apiRequest(method, url, body, token) {
-  const req = new Request(url);
-  req.method = method;
-  req.headers = {
+function dayStart(d) {
+  const r = new Date(d); r.setUTCHours(0, 0, 0, 0); return r;
+}
+function dayEnd(d) {
+  const r = new Date(d); r.setUTCHours(23, 59, 59, 0); return r;
+}
+function workStart(d) {
+  const r = new Date(d); r.setUTCHours(START_HOUR, 0, 0, 0); return r;
+}
+function workEnd(d) {
+  const r = new Date(d); r.setUTCHours(END_HOUR, 0, 0, 0); return r;
+}
+
+// ── HTTP helpers ──────────────────────────────────────────────────────────────
+
+function authHeaders(token) {
+  return {
     "Accept":        "application/json",
     "Content-Type":  "application/json",
     "User-Agent":    "TempoMobile/4.0",
-    "Authorization": `Bearer ${token}`,
+    "Authorization": token ? `Bearer ${token}` : "Basic " + btoa(`${USERNAME}:${PASSWORD}`),
   };
-  if (body) req.body = JSON.stringify(body);
-  try {
-    // loadString so we always get the raw response even on non-JSON
-    const raw  = await req.loadString();
-    const status = req.response.statusCode;
-    let data = null;
-    try { data = JSON.parse(raw); } catch (_) { data = raw; }
-    return { ok: status >= 200 && status < 300, status, data, raw };
-  } catch (e) {
-    return { ok: false, status: 0, data: null, raw: e.message };
-  }
 }
 
-// ── Pre-login: discover company/tenant endpoints ──────────────────────────────
+async function apiGet(path, token) {
+  const req = new Request(SERVER + path);
+  req.method = "GET";
+  req.headers = authHeaders(token);
+  try {
+    const raw = await req.loadString();
+    const status = req.response.statusCode;
+    let data; try { data = JSON.parse(raw); } catch (_) { data = raw; }
+    return { ok: status >= 200 && status < 300, status, data, raw };
+  } catch (e) { return { ok: false, status: 0, data: null, raw: e.message }; }
+}
 
-async function preLoginDiscover() {
-  const hits = [];
-  for (const path of PRE_LOGIN_PATHS) {
-    const req = new Request(SERVER + path);
-    req.method = "GET";
-    req.headers = { "Accept": "application/json", "User-Agent": "TempoMobile/4.0" };
-    try {
-      const raw    = await req.loadString();
-      const status = req.response.statusCode;
-      if (status < 400) hits.push({ path, status, raw: raw.slice(0, 200) });
-    } catch (_) {}
-  }
-  if (hits.length > 0) {
-    const a = new Alert();
-    a.title   = "Pre-login endpoints";
-    a.message = hits.map(h => `${h.status} ${h.path}\n${h.raw}`).join("\n\n");
-    a.addAction("OK");
-    await a.present();
-  }
-  return hits;
+async function apiPost(path, body, token) {
+  const req = new Request(SERVER + path);
+  req.method = "POST";
+  req.headers = authHeaders(token);
+  req.body = JSON.stringify(body);
+  try {
+    const raw = await req.loadString();
+    const status = req.response.statusCode;
+    let data; try { data = JSON.parse(raw); } catch (_) { data = raw; }
+    return { ok: status >= 200 && status < 300, status, data, raw };
+  } catch (e) { return { ok: false, status: 0, data: null, raw: e.message }; }
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 
-async function tryLogin(url, body, authHeader) {
-  const req = new Request(url);
-  req.method = "POST";
-  req.headers = {
-    "Accept":       "application/json",
-    "Content-Type": "application/json",
-    "User-Agent":   "TempoMobile/4.0",
-  };
-  if (authHeader) req.headers["Authorization"] = authHeader;
-  if (body) req.body = JSON.stringify(body);
-  try {
-    const raw    = await req.loadString();
-    const status = req.response.statusCode;
-    let d;
-    try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
-    console.log(`${status} ${url.replace(SERVER,"")} ${authHeader?"auth":"no-auth"} ${body?JSON.stringify(body).slice(0,40):"no-body"} → ${raw.slice(0,60)}`);
-    return { status, d, raw };
-  } catch (_) { return null; }
-}
-
 async function login() {
-  const userShort = USERNAME.split("@")[0];
+  const userShort  = USERNAME.split("@")[0];
   const basicFull  = "Basic " + btoa(`${USERNAME}:${PASSWORD}`);
   const basicShort = "Basic " + btoa(`${userShort}:${PASSWORD}`);
 
-  // Confirmed: API uses /api/ (no version). Try /api/login.
-  const loginUrls = [
-    SERVER + "/api/login",
-    SERVER + "/api/v1/login",   // fallback
+  const loginUrls = ["/api/login", "/api/v1/login"];
+  const bodies    = [
+    { username: userShort, password: PASSWORD },
+    { username: USERNAME,  password: PASSWORD },
   ];
 
-  const attempts = [
-    { ct: "application/json",                  body: JSON.stringify({ username: userShort, password: PASSWORD }), auth: basicShort },
-    { ct: "application/json",                  body: JSON.stringify({ username: USERNAME,  password: PASSWORD }), auth: basicFull  },
-    { ct: "application/json",                  body: JSON.stringify({ username: userShort, password: PASSWORD }), auth: null },
-    { ct: "application/x-www-form-urlencoded", body: `username=${encodeURIComponent(userShort)}&password=${encodeURIComponent(PASSWORD)}`, auth: basicShort },
-    { ct: "application/x-www-form-urlencoded", body: `username=${encodeURIComponent(userShort)}&password=${encodeURIComponent(PASSWORD)}`, auth: null },
-    { ct: "application/json",                  body: null, auth: basicShort },
-    { ct: "application/json",                  body: null, auth: basicFull  },
-  ];
-
-  for (const url of loginUrls) {
-    for (const { ct, body, auth } of attempts) {
-      const req = new Request(url);
-      req.method = "POST";
-      req.headers = { "Accept": "application/json", "Content-Type": ct, "User-Agent": "TempoMobile/4.0" };
-      if (auth) req.headers["Authorization"] = auth;
-      if (body) req.body = body;
-      try {
-        const raw    = await req.loadString();
-        const status = req.response.statusCode;
-        let d; try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
-        console.log(`${status} ${url.replace(SERVER,"")} [${ct.split("/")[1]}] → ${raw.slice(0,80)}`);
-        if (status >= 200 && status < 300) {
-          const token = d.access_token || d.token || d.Token || d.accessToken ||
-                        d.jwt || d.id_token || d.sessionToken || d.authToken ||
-                        d.SessionId || d.sessionId || d.SessionID;
-          if (token) return { token, loginData: d };
-          const a = new Alert(); a.title = `200! ${url.replace(SERVER,"")}`; a.message = raw.slice(0,500); a.addAction("OK"); await a.present();
-          return { token: null, loginData: d, raw };
-        }
-      } catch (_) {}
+  for (const path of loginUrls) {
+    for (const body of bodies) {
+      for (const auth of [basicShort, basicFull, null]) {
+        const req = new Request(SERVER + path);
+        req.method = "POST";
+        req.headers = { "Accept": "application/json", "Content-Type": "application/json", "User-Agent": "TempoMobile/4.0" };
+        if (auth) req.headers["Authorization"] = auth;
+        req.body = JSON.stringify(body);
+        try {
+          const raw    = await req.loadString();
+          const status = req.response.statusCode;
+          let d; try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
+          console.log(`${status} ${path} → ${raw.slice(0, 80)}`);
+          if (status >= 200 && status < 300) {
+            const token = d.access_token || d.token || d.Token || d.accessToken ||
+                          d.jwt || d.id_token || d.sessionToken || d.authToken ||
+                          d.SessionId || d.sessionId || d.SessionID;
+            if (token) return { token, loginData: d };
+            const a = new Alert(); a.title = `Login 200 — ${path}`; a.message = raw.slice(0, 500); a.addAction("OK"); await a.present();
+            return { token: null, loginData: d, raw };
+          }
+        } catch (_) {}
+      }
     }
   }
   return null;
 }
 
-// ── Discovery: GET every candidate endpoint and show what comes back ──────────
+// ── Inspect existing marcajes for one day ─────────────────────────────────────
 
-async function discoverEndpoints(token) {
-  const monday  = thisMonday();
-  const results = [];
-
-  for (const path of TIMESHEET_PATHS) {
-    const url = SERVER + path;
-    const r   = await apiRequest("GET", url, null, token);
-    results.push({ path, status: r.status, preview: JSON.stringify(r.data).slice(0, 120) });
-  }
-
-  // Show results in an alert (scroll through them)
-  const lines = results.map(r => `${r.status}  ${r.path}\n     ${r.preview}`).join("\n\n");
-  const a = new Alert();
-  a.title   = "Endpoint Discovery";
-  a.message = lines || "No responses";
-  a.addAction("OK");
-  await a.present();
-  return results;
+async function inspectDay(day, token) {
+  const fi = dotnetDate(dayStart(day));
+  const ff = dotnetDate(dayEnd(day));
+  const r  = await apiGet(`/api/marcajes/${USER_ID}?fechaInicio=${fi}&fechaFin=${ff}`, token);
+  return r;
 }
 
-// ── Fill timesheet ────────────────────────────────────────────────────────────
+// ── Submit one day (8 h clock-in + clock-out) ─────────────────────────────────
 
-async function fillWeek(token, loginData) {
-  const daily  = Math.floor(WEEKLY_HOURS / 5);
-  const monday = thisMonday();
-  const results = [];
+async function submitDay(day, token) {
+  const fi = dotnetDate(dayStart(day));
+  const ff = dotnetDate(dayEnd(day));
+  const clockIn  = dotnetDate(workStart(day));
+  const clockOut = dotnetDate(workEnd(day));
 
-  // Build every plausible payload shape from what we know about the login response
-  function buildPayloads(ds, hours) {
-    const base = [
-      { date: ds,      hours },
-      { fecha: ds,     horas: hours },
-      { Date: ds,      Hours: hours },
-      { workDate: ds,  hours },
-      { day: ds,       hours },
-    ];
-    // If login returned employee/user ID, include it in payloads
-    const uid = loginData && (loginData.userId || loginData.UserId ||
-                               loginData.employeeId || loginData.id);
-    if (uid) {
-      base.push({ date: ds, hours, userId: uid });
-      base.push({ fecha: ds, horas: hours, empleadoId: uid });
-    }
-    return base;
+  // First: check if entries already exist
+  const existing = await inspectDay(day, token);
+  if (existing.ok && Array.isArray(existing.data) && existing.data.length > 0) {
+    console.log(`  Already has ${existing.data.length} marcaje(s) — skipping`);
+    return { ok: true, skipped: true };
   }
 
-  for (let i = 0; i < 5; i++) {
-    const day  = new Date(monday);
-    day.setDate(monday.getDate() + i);
-    const ds   = dateStr(day);
-    const hours = daily;
+  // Try the payload shapes most likely for a marcajes clock-in/out system
+  const payloads = [
+    // Single entry covering the whole day
+    { fechaInicio: clockIn, fechaFin: clockOut },
+    { FechaInicio: clockIn, FechaFin: clockOut },
+    // Two separate clock events
+    [{ fecha: clockIn, tipo: "E" }, { fecha: clockOut, tipo: "S" }],
+    [{ Fecha: clockIn, Tipo: "E" }, { Fecha: clockOut, Tipo: "S" }],
+    // Hours-based
+    { fecha: clockIn, horas: DAILY_HOURS },
+    { fecha: fi,      horas: DAILY_HOURS },
+  ];
 
-    const payloads = buildPayloads(ds, hours);
-    let written = false;
-
-    outer:
-    for (const tsPath of TIMESHEET_PATHS) {
-      const url = SERVER + tsPath;
-      for (const payload of payloads) {
-        for (const method of ["POST", "PUT"]) {
-          const r = await apiRequest(method, url, payload, token);
-          if (r.ok) {
-            console.log(`✓ ${ds} ${hours}h via ${method} ${tsPath}`);
-            results.push({ date: ds, hours, ok: true, path: tsPath, method });
-            written = true;
-            break outer;
-          }
-        }
+  for (const payload of payloads) {
+    if (Array.isArray(payload)) {
+      // Submit as two separate POSTs
+      let allOk = true;
+      for (const p of payload) {
+        const r = await apiPost(`/api/marcajes/${USER_ID}`, p, token);
+        console.log(`  POST marcaje ${JSON.stringify(p).slice(0,60)} → ${r.status} ${r.raw?.slice(0,40)}`);
+        if (!r.ok) { allOk = false; break; }
       }
-    }
-
-    if (!written) {
-      console.log(`✗ ${ds} — no endpoint accepted the submission`);
-      results.push({ date: ds, hours, ok: false });
+      if (allOk) return { ok: true };
+    } else {
+      const r = await apiPost(`/api/marcajes/${USER_ID}`, payload, token);
+      console.log(`  POST marcaje ${JSON.stringify(payload).slice(0,60)} → ${r.status} ${r.raw?.slice(0,40)}`);
+      if (r.ok) return { ok: true };
     }
   }
-  return results;
+  return { ok: false };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  // Step 0 — Pre-login discovery (finds company/tenant endpoints if any)
-  await preLoginDiscover();
-
-  // Step 1 — Login
+  // Login
   const loginResult = await login();
   if (!loginResult) {
     const a = new Alert();
     a.title   = "❌ Login failed";
-    a.message = SERVER + "\nNo login endpoint responded. Check console for details.";
+    a.message = "No login endpoint responded.\nCheck console for details.";
     a.addAction("OK");
     await a.present();
     Script.complete();
@@ -271,9 +196,8 @@ async function main() {
   }
 
   if (!loginResult.token) {
-    // Login responded but no token — show what came back so we can debug
     const a = new Alert();
-    a.title   = "⚠️ Login OK but no token";
+    a.title   = "⚠️ Login OK — no token";
     a.message = JSON.stringify(loginResult.loginData, null, 2).slice(0, 400);
     a.addAction("OK");
     await a.present();
@@ -281,43 +205,41 @@ async function main() {
     return;
   }
 
-  const { token, loginData } = loginResult;
+  const token = loginResult.token;
+  const monday = thisMonday();
 
-  // Step 2a — Discovery mode: show what each endpoint returns
-  if (DISCOVER_MODE) {
-    await discoverEndpoints(token);
+  // Inspect mode — show existing marcajes for Monday to understand structure
+  if (INSPECT_ONLY) {
+    const r = await inspectDay(monday, token);
+    const a = new Alert();
+    a.title   = "Marcajes — Monday";
+    a.message = `Status: ${r.status}\n\n${JSON.stringify(r.data, null, 2).slice(0, 600)}`;
+    a.addAction("OK");
+    await a.present();
     Script.complete();
     return;
   }
 
-  // Step 2b — Fill the week
-  const results  = await fillWeek(token, loginData);
-  const okCount  = results.filter(r => r.ok).length;
-  const total    = results.length;
-
-  if (okCount === total) {
-    const a = new Alert();
-    a.title   = "✅ Timesheet filled";
-    a.message = `Week of ${dateStr(thisMonday())}\n${WEEKLY_HOURS} h submitted (${okCount}/${total} days)\nEndpoint: ${results[0]?.path}`;
-    a.addAction("OK");
-    await a.present();
-  } else if (okCount > 0) {
-    const failed = results.filter(r => !r.ok).map(r => r.date).join(", ");
-    const a = new Alert();
-    a.title   = "⚠️ Partial submission";
-    a.message = `${okCount}/${total} days written.\nFailed: ${failed}`;
-    a.addAction("OK");
-    await a.present();
-  } else {
-    // Nothing worked — switch to discovery mode automatically
-    const a = new Alert();
-    a.title   = "❌ Submission failed";
-    a.message = "Could not write to any timesheet endpoint.\nSwitching to discovery mode…";
-    a.addAction("OK");
-    await a.present();
-    await discoverEndpoints(token);
+  // Fill Mon–Fri
+  let ok = 0;
+  for (let i = 0; i < 5; i++) {
+    const day = new Date(monday);
+    day.setDate(monday.getDate() + i);
+    console.log(`Processing ${day.toISOString().slice(0,10)} …`);
+    const result = await submitDay(day, token);
+    if (result.ok) ok++;
   }
 
+  const a = new Alert();
+  if (ok === 5) {
+    a.title   = "✅ Week filled";
+    a.message = `All 5 days submitted (${DAILY_HOURS * 5} h total)\nWeek of ${monday.toISOString().slice(0,10)}`;
+  } else {
+    a.title   = "⚠️ Partial";
+    a.message = `${ok}/5 days submitted.\nCheck console for details.`;
+  }
+  a.addAction("OK");
+  await a.present();
   Script.complete();
 }
 
