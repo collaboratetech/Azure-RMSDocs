@@ -5,7 +5,7 @@
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const SERVER     = "https://philipmorris.softmachine.es:440";
-const USERNAME   = "William.hill@pmi.com";
+const USERNAME   = "william.hill@pmi.com";
 const PASSWORD   = "50552441";
 const WEEKLY_HOURS = 40;
 
