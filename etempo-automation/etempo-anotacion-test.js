@@ -7,6 +7,9 @@ const USERNAME = "william.hill@pmi.com";
 const PASSWORD = "50552441";
 const USER_ID  = 2956;
 
+const CLOCK_IN_HOUR  = 8;   // horaInicio
+const CLOCK_OUT_HOUR = 17;  // horaFin
+
 const BASIC  = "Basic " + btoa(`${USERNAME}:${PASSWORD}`);
 const ACCEPT = "application/json,text/json,text/x-json,text/javascript,application/xml,text/xml";
 const UA     = "RestSharp/110.2.0.0";
@@ -56,8 +59,8 @@ async function main() {
     tipoAnotacion:   7,
     fechaInicio:     fecha,
     fechaFin:        fecha,
-    horaInicio:      0,
-    horaFin:         0,
+    horaInicio:      CLOCK_IN_HOUR,
+    horaFin:         CLOCK_OUT_HOUR,
     conceptoId:      16,
   };
 
