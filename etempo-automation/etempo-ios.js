@@ -13,6 +13,21 @@ const WEEKLY_HOURS = 40;
 // Set to true to run endpoint discovery instead of filling the timesheet
 const DISCOVER_MODE = true;
 
+// Pre-login discovery paths — GETted before login to find company/tenant info
+const PRE_LOGIN_PATHS = [
+  "/api/v1/empresas",
+  "/api/v1/empresa",
+  "/api/v1/companies",
+  "/api/v1/company",
+  "/api/v1/tenants",
+  "/api/v1/clientes",
+  "/api/v1/config",
+  "/api/v1/setup",
+  "/api/v1/version",
+  "/api/v1/info",
+  "/api/v1/server",
+];
+
 // Timesheet endpoint candidates (GETted first to discover structure)
 const TIMESHEET_PATHS = [
   "/api/v1/imputaciones",
@@ -67,30 +82,81 @@ async function apiRequest(method, url, body, token) {
   }
 }
 
+// ── Pre-login: discover company/tenant endpoints ──────────────────────────────
+
+async function preLoginDiscover() {
+  const hits = [];
+  for (const path of PRE_LOGIN_PATHS) {
+    const req = new Request(SERVER + path);
+    req.method = "GET";
+    req.headers = { "Accept": "application/json", "User-Agent": "TempoMobile/4.0" };
+    try {
+      const raw    = await req.loadString();
+      const status = req.response.statusCode;
+      if (status < 400) hits.push({ path, status, raw: raw.slice(0, 200) });
+    } catch (_) {}
+  }
+  if (hits.length > 0) {
+    const a = new Alert();
+    a.title   = "Pre-login endpoints";
+    a.message = hits.map(h => `${h.status} ${h.path}\n${h.raw}`).join("\n\n");
+    a.addAction("OK");
+    await a.present();
+  }
+  return hits;
+}
+
 // ── Login ─────────────────────────────────────────────────────────────────────
 
 async function login() {
-  const req = new Request(LOGIN_URL);
-  req.method = "POST";
-  req.headers = {
-    "Accept":       "application/json",
-    "Content-Type": "application/json",
-    "User-Agent":   "TempoMobile/4.0",
-    "Authorization": "Basic " + btoa(`${USERNAME}:${PASSWORD}`),
-  };
-  req.body = JSON.stringify({ username: USERNAME, password: PASSWORD });
-  try {
-    const raw    = await req.loadString();
-    const status = req.response.statusCode;
-    const d      = JSON.parse(raw);
-    const token  = d.access_token || d.token || d.Token ||
-                   d.accessToken  || d.jwt   || d.id_token;
-    if (token) return { token, loginData: d };
-    // No token field — return entire object so we can inspect it
-    return { token: null, loginData: d, raw };
-  } catch (e) {
-    return null;
+  // Try every plausible credential shape the API might expect
+  const userShort = USERNAME.split("@")[0];   // "William.hill"
+  const attempts = [
+    { username: USERNAME,   password: PASSWORD },
+    { username: userShort,  password: PASSWORD },
+    { Username: USERNAME,   Password: PASSWORD },
+    { Username: userShort,  Password: PASSWORD },
+    { user:     USERNAME,   pass:     PASSWORD },
+    { user:     userShort,  pass:     PASSWORD },
+    { login:    USERNAME,   password: PASSWORD },
+    { login:    userShort,  password: PASSWORD },
+    // With explicit company fields (common in multi-tenant eTempo)
+    { username: USERNAME,  password: PASSWORD, empresa: "pmi" },
+    { username: USERNAME,  password: PASSWORD, company: "philipmorris" },
+    { username: USERNAME,  password: PASSWORD, client:  "pmi" },
+    { username: userShort, password: PASSWORD, empresa: "pmi" },
+  ];
+
+  for (const body of attempts) {
+    const req = new Request(LOGIN_URL);
+    req.method = "POST";
+    req.headers = {
+      "Accept":        "application/json",
+      "Content-Type":  "application/json",
+      "User-Agent":    "TempoMobile/4.0",
+      "Authorization": "Basic " + btoa(`${USERNAME}:${PASSWORD}`),
+    };
+    req.body = JSON.stringify(body);
+    try {
+      const raw    = await req.loadString();
+      const status = req.response.statusCode;
+      let d;
+      try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
+
+      // Show what each attempt returns (status + first 200 chars)
+      console.log(`${status} [${JSON.stringify(body)}] → ${raw.slice(0, 100)}`);
+
+      if (status >= 200 && status < 300) {
+        const token = d.access_token || d.token || d.Token ||
+                      d.accessToken  || d.jwt   || d.id_token ||
+                      d.sessionToken || d.authToken || d.SessionId ||
+                      d.sessionId    || d.SessionID;
+        if (token) return { token, loginData: d };
+        return { token: null, loginData: d, raw };
+      }
+    } catch (_) {}
   }
+  return null;
 }
 
 // ── Discovery: GET every candidate endpoint and show what comes back ──────────
@@ -177,6 +243,9 @@ async function fillWeek(token, loginData) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
+  // Step 0 — Pre-login discovery (finds company/tenant endpoints if any)
+  await preLoginDiscover();
+
   // Step 1 — Login
   const loginResult = await login();
   if (!loginResult) {
