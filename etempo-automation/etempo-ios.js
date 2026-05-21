@@ -87,10 +87,22 @@ async function submitDay(day) {
   const inResult  = await apiPost("/api/marcajes", marcaje(isoZ(day, CLOCK_IN_HOUR),  2));
   const outResult = await apiPost("/api/marcajes", marcaje(isoZ(day, CLOCK_OUT_HOUR), 1));
 
-  console.log(`${dateStr}: IN  ${inResult.status}  ${inResult.raw?.slice(0, 60)}`);
-  console.log(`${dateStr}: OUT ${outResult.status}  ${outResult.raw?.slice(0, 60)}`);
+  console.log(`${dateStr}: IN  ${inResult.status}  ${inResult.raw?.slice(0, 80)}`);
+  console.log(`${dateStr}: OUT ${outResult.status}  ${outResult.raw?.slice(0, 80)}`);
 
-  return { ok: inResult.ok && outResult.ok };
+  // Show first failure in detail so we can see what the server says
+  if (!inResult.ok || !outResult.ok) {
+    const failed = !inResult.ok ? inResult : outResult;
+    const label  = !inResult.ok ? "IN" : "OUT";
+    const a = new Alert();
+    a.title   = `❌ ${dateStr} ${label} failed (${failed.status})`;
+    a.message = failed.raw?.slice(0, 500) || "No response";
+    a.addAction("OK");
+    await a.present();
+    return { ok: false };
+  }
+
+  return { ok: true };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
