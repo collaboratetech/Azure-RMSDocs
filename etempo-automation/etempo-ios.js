@@ -12,33 +12,30 @@ const WEEKLY_HOURS = 40;
 // Set to true to run endpoint discovery instead of filling the timesheet
 const DISCOVER_MODE = false;
 
-// Pre-login discovery paths — GETted before login to find company/tenant info
+// Pre-login discovery paths
 const PRE_LOGIN_PATHS = [
-  "/api/v1/empresas",
-  "/api/v1/empresa",
-  "/api/v1/companies",
-  "/api/v1/company",
-  "/api/v1/tenants",
-  "/api/v1/clientes",
-  "/api/v1/config",
-  "/api/v1/setup",
+  "/api/version",
   "/api/v1/version",
-  "/api/v1/info",
-  "/api/v1/server",
+  "/api/empresas",
+  "/api/clientes",
+  "/api/config",
 ];
 
-// Timesheet endpoint candidates (GETted first to discover structure)
+// API uses /api/ prefix (no version), Spanish endpoint names
+// User ID confirmed: 2956  (from /api/perfiles/2956 captured via Proxyman)
+const USER_ID = 2956;
+
+// Timesheet endpoint candidates — Spanish names, no version prefix
 const TIMESHEET_PATHS = [
-  "/api/v1/imputaciones",
-  "/api/v1/jornadas",
-  "/api/v1/timesheets",
-  "/api/v1/timesheet",
-  "/api/v1/workdays",
-  "/api/v1/entries",
-  "/api/v1/timeentries",
-  "/api/v1/horas",
-  "/api/v1/fichajes",
-  "/api/timesheets",
+  `/api/perfiles/${USER_ID}/imputaciones`,
+  `/api/perfiles/${USER_ID}/jornadas`,
+  `/api/perfiles/${USER_ID}/horas`,
+  `/api/perfiles/${USER_ID}/fichajes`,
+  `/api/imputaciones`,
+  `/api/jornadas`,
+  `/api/horas`,
+  `/api/fichajes`,
+  `/api/timesheets`,
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -131,46 +128,45 @@ async function login() {
   const userShort = USERNAME.split("@")[0];
   const basicFull  = "Basic " + btoa(`${USERNAME}:${PASSWORD}`);
   const basicShort = "Basic " + btoa(`${userShort}:${PASSWORD}`);
-  const loginUrl   = SERVER + "/api/v1/login";
+
+  // Confirmed: API uses /api/ (no version). Try /api/login.
+  const loginUrls = [
+    SERVER + "/api/login",
+    SERVER + "/api/v1/login",   // fallback
+  ];
 
   const attempts = [
-    // JSON
     { ct: "application/json",                  body: JSON.stringify({ username: userShort, password: PASSWORD }), auth: basicShort },
     { ct: "application/json",                  body: JSON.stringify({ username: USERNAME,  password: PASSWORD }), auth: basicFull  },
     { ct: "application/json",                  body: JSON.stringify({ username: userShort, password: PASSWORD }), auth: null },
-    // Form-encoded
     { ct: "application/x-www-form-urlencoded", body: `username=${encodeURIComponent(userShort)}&password=${encodeURIComponent(PASSWORD)}`, auth: basicShort },
-    { ct: "application/x-www-form-urlencoded", body: `username=${encodeURIComponent(USERNAME)}&password=${encodeURIComponent(PASSWORD)}`,  auth: basicFull  },
-    { ct: "application/x-www-form-urlencoded", body: `Username=${encodeURIComponent(userShort)}&Password=${encodeURIComponent(PASSWORD)}`, auth: null },
-    { ct: "application/x-www-form-urlencoded", body: `login=${encodeURIComponent(userShort)}&password=${encodeURIComponent(PASSWORD)}`,    auth: null },
-    // XML
-    { ct: "application/xml", body: `<?xml version="1.0"?><login><username>${userShort}</username><password>${PASSWORD}</password></login>`, auth: basicShort },
-    { ct: "text/xml",        body: `<?xml version="1.0"?><LoginRequest><Username>${userShort}</Username><Password>${PASSWORD}</Password></LoginRequest>`, auth: basicShort },
-    // No body — Basic auth only
-    { ct: "application/json", body: null, auth: basicShort },
-    { ct: "application/json", body: null, auth: basicFull  },
+    { ct: "application/x-www-form-urlencoded", body: `username=${encodeURIComponent(userShort)}&password=${encodeURIComponent(PASSWORD)}`, auth: null },
+    { ct: "application/json",                  body: null, auth: basicShort },
+    { ct: "application/json",                  body: null, auth: basicFull  },
   ];
 
-  for (const { ct, body, auth } of attempts) {
-    const req = new Request(loginUrl);
-    req.method = "POST";
-    req.headers = { "Accept": "application/json, text/xml, */*", "Content-Type": ct, "User-Agent": "TempoMobile/4.0" };
-    if (auth) req.headers["Authorization"] = auth;
-    if (body) req.body = body;
-    try {
-      const raw    = await req.loadString();
-      const status = req.response.statusCode;
-      let d; try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
-      console.log(`${status} [${ct.split("/")[1]}] auth=${!!auth} → ${raw.slice(0,80)}`);
-      if (status >= 200 && status < 300) {
-        const token = d.access_token || d.token || d.Token || d.accessToken ||
-                      d.jwt || d.id_token || d.sessionToken || d.authToken ||
-                      d.SessionId || d.sessionId || d.SessionID;
-        if (token) return { token, loginData: d };
-        const a = new Alert(); a.title = `200! [${ct.split("/")[1]}]`; a.message = raw.slice(0,500); a.addAction("OK"); await a.present();
-        return { token: null, loginData: d, raw };
-      }
-    } catch (_) {}
+  for (const url of loginUrls) {
+    for (const { ct, body, auth } of attempts) {
+      const req = new Request(url);
+      req.method = "POST";
+      req.headers = { "Accept": "application/json", "Content-Type": ct, "User-Agent": "TempoMobile/4.0" };
+      if (auth) req.headers["Authorization"] = auth;
+      if (body) req.body = body;
+      try {
+        const raw    = await req.loadString();
+        const status = req.response.statusCode;
+        let d; try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
+        console.log(`${status} ${url.replace(SERVER,"")} [${ct.split("/")[1]}] → ${raw.slice(0,80)}`);
+        if (status >= 200 && status < 300) {
+          const token = d.access_token || d.token || d.Token || d.accessToken ||
+                        d.jwt || d.id_token || d.sessionToken || d.authToken ||
+                        d.SessionId || d.sessionId || d.SessionID;
+          if (token) return { token, loginData: d };
+          const a = new Alert(); a.title = `200! ${url.replace(SERVER,"")}`; a.message = raw.slice(0,500); a.addAction("OK"); await a.present();
+          return { token: null, loginData: d, raw };
+        }
+      } catch (_) {}
+    }
   }
   return null;
 }
