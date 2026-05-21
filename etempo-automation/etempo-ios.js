@@ -128,64 +128,82 @@ async function tryLogin(url, body, authHeader) {
 }
 
 async function login() {
-  const userShort = USERNAME.split("@")[0];   // "William.hill"
+  const userShort = USERNAME.split("@")[0];
   const basicFull  = "Basic " + btoa(`${USERNAME}:${PASSWORD}`);
   const basicShort = "Basic " + btoa(`${userShort}:${PASSWORD}`);
 
-  // Build attempts — username-in-path variants are the primary new theory:
-  // /api/v1/login returns JSON 404 "Recurso inexistente" suggesting the
-  // route exists but expects a path parameter like /api/v1/login/{username}
-  const attempts = [
-    // Username in path (POST with password in body)
-    { url: `/api/v1/login/${userShort}`,           body: { password: PASSWORD }, auth: basicShort },
-    { url: `/api/v1/login/${USERNAME}`,             body: { password: PASSWORD }, auth: basicFull  },
-    { url: `/api/v3/login/${userShort}`,           body: { password: PASSWORD }, auth: basicShort },
-    { url: `/api/v1/users/${userShort}/login`,     body: { password: PASSWORD }, auth: basicShort },
-    { url: `/api/v1/users/${userShort}/token`,     body: { password: PASSWORD }, auth: basicShort },
-    { url: `/api/v1/employees/${userShort}/login`, body: { password: PASSWORD }, auth: basicShort },
-    // GET with Basic auth only (some APIs authenticate via GET)
-    { url: `/api/v1/login`,           body: null, auth: basicFull,  method: "GET" },
-    { url: `/api/v1/login`,           body: null, auth: basicShort, method: "GET" },
-    { url: `/api/v3/login`,           body: null, auth: basicFull,  method: "GET" },
-    { url: `/api/v1/login/${userShort}`, body: null, auth: basicShort, method: "GET" },
-    // No-prefix variants
-    { url: `/v3/login`,               body: { username: userShort, password: PASSWORD }, auth: null },
-    { url: `/v1/login`,               body: { username: userShort, password: PASSWORD }, auth: null },
+  // Extra headers the mobile app likely sends — try each set in turn
+  const headerSets = [
+    {},   // no extras (baseline)
+    { "X-Api-Key":      "TempoMobile" },
+    { "X-Api-Key":      "softmachine" },
+    { "X-App-Id":       "com.softmachine.tempomobile" },
+    { "X-App-Id":       "com.softmachine.mytempo" },
+    { "X-Client-Id":    "TempoMobile" },
+    { "X-App-Version":  "4.0.34.0" },
+    { "X-Api-Key": "TempoMobile", "X-App-Version": "4.0.34.0" },
   ];
 
-  for (const { url, body, auth, method } of attempts) {
-    const fullUrl = SERVER + url;
-    const req = new Request(fullUrl);
-    req.method = method || "POST";
-    req.headers = {
-      "Accept":       "application/json",
-      "Content-Type": "application/json",
-      "User-Agent":   "TempoMobile/4.0",
-    };
-    if (auth) req.headers["Authorization"] = auth;
-    if (body) req.body = JSON.stringify(body);
-    try {
-      const raw    = await req.loadString();
-      const status = req.response.statusCode;
-      let d;
-      try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
-      console.log(`${status} ${req.method} ${url} → ${raw.slice(0, 60)}`);
+  const loginUrl = SERVER + "/api/v1/login";
+  const bodies = [
+    { username: userShort, password: PASSWORD },
+    { username: USERNAME,  password: PASSWORD },
+  ];
+  // Also try credentials as query string
+  const qsUrls = [
+    `${loginUrl}?username=${encodeURIComponent(userShort)}&password=${encodeURIComponent(PASSWORD)}`,
+    `${loginUrl}?username=${encodeURIComponent(USERNAME)}&password=${encodeURIComponent(PASSWORD)}`,
+  ];
 
-      if (status >= 200 && status < 300) {
-        const token = d.access_token || d.token || d.Token ||
-                      d.accessToken  || d.jwt   || d.id_token ||
-                      d.sessionToken || d.authToken ||
-                      d.SessionId    || d.sessionId || d.SessionID;
-        if (token) return { token, loginData: d };
-
-        const a = new Alert();
-        a.title   = `200 at ${url}`;
-        a.message = raw.slice(0, 500);
-        a.addAction("OK");
-        await a.present();
-        return { token: null, loginData: d, raw };
+  for (const extraHeaders of headerSets) {
+    for (const body of bodies) {
+      for (const auth of [basicShort, basicFull, null]) {
+        const req = new Request(loginUrl);
+        req.method = "POST";
+        req.headers = {
+          "Accept":       "application/json",
+          "Content-Type": "application/json",
+          "User-Agent":   "TempoMobile/4.0",
+          ...extraHeaders,
+        };
+        if (auth) req.headers["Authorization"] = auth;
+        req.body = JSON.stringify(body);
+        try {
+          const raw    = await req.loadString();
+          const status = req.response.statusCode;
+          let d; try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
+          const extras = Object.keys(extraHeaders).join(",") || "none";
+          console.log(`${status} headers=[${extras}] user=${body.username?.split("@")[0]} → ${raw.slice(0,60)}`);
+          if (status >= 200 && status < 300) {
+            const token = d.access_token || d.token || d.Token || d.accessToken ||
+                          d.jwt || d.id_token || d.sessionToken || d.authToken ||
+                          d.SessionId || d.sessionId || d.SessionID;
+            if (token) return { token, loginData: d };
+            const a = new Alert(); a.title = `200!`; a.message = raw.slice(0,500); a.addAction("OK"); await a.present();
+            return { token: null, loginData: d, raw };
+          }
+        } catch (_) {}
       }
-    } catch (_) {}
+    }
+    // Query-string attempts (no body)
+    for (const url of qsUrls) {
+      const req = new Request(url);
+      req.method = "POST";
+      req.headers = { "Accept": "application/json", "User-Agent": "TempoMobile/4.0", ...extraHeaders };
+      try {
+        const raw    = await req.loadString();
+        const status = req.response.statusCode;
+        const extras = Object.keys(extraHeaders).join(",") || "none";
+        console.log(`${status} QS headers=[${extras}] → ${raw.slice(0,60)}`);
+        if (status >= 200 && status < 300) {
+          let d; try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
+          const token = d.access_token || d.token || d.Token || d.sessionId;
+          if (token) return { token, loginData: d };
+          const a = new Alert(); a.title = `200 QS!`; a.message = raw.slice(0,500); a.addAction("OK"); await a.present();
+          return { token: null, loginData: d, raw };
+        }
+      } catch (_) {}
+    }
   }
   return null;
 }
