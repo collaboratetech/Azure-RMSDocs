@@ -1,0 +1,4 @@
+config.env
+*.png
+api_calls.json
+__pycache__/
