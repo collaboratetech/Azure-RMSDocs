@@ -131,79 +131,46 @@ async function login() {
   const userShort = USERNAME.split("@")[0];
   const basicFull  = "Basic " + btoa(`${USERNAME}:${PASSWORD}`);
   const basicShort = "Basic " + btoa(`${userShort}:${PASSWORD}`);
+  const loginUrl   = SERVER + "/api/v1/login";
 
-  // Extra headers the mobile app likely sends — try each set in turn
-  const headerSets = [
-    {},   // no extras (baseline)
-    { "X-Api-Key":      "TempoMobile" },
-    { "X-Api-Key":      "softmachine" },
-    { "X-App-Id":       "com.softmachine.tempomobile" },
-    { "X-App-Id":       "com.softmachine.mytempo" },
-    { "X-Client-Id":    "TempoMobile" },
-    { "X-App-Version":  "4.0.34.0" },
-    { "X-Api-Key": "TempoMobile", "X-App-Version": "4.0.34.0" },
+  const attempts = [
+    // JSON
+    { ct: "application/json",                  body: JSON.stringify({ username: userShort, password: PASSWORD }), auth: basicShort },
+    { ct: "application/json",                  body: JSON.stringify({ username: USERNAME,  password: PASSWORD }), auth: basicFull  },
+    { ct: "application/json",                  body: JSON.stringify({ username: userShort, password: PASSWORD }), auth: null },
+    // Form-encoded
+    { ct: "application/x-www-form-urlencoded", body: `username=${encodeURIComponent(userShort)}&password=${encodeURIComponent(PASSWORD)}`, auth: basicShort },
+    { ct: "application/x-www-form-urlencoded", body: `username=${encodeURIComponent(USERNAME)}&password=${encodeURIComponent(PASSWORD)}`,  auth: basicFull  },
+    { ct: "application/x-www-form-urlencoded", body: `Username=${encodeURIComponent(userShort)}&Password=${encodeURIComponent(PASSWORD)}`, auth: null },
+    { ct: "application/x-www-form-urlencoded", body: `login=${encodeURIComponent(userShort)}&password=${encodeURIComponent(PASSWORD)}`,    auth: null },
+    // XML
+    { ct: "application/xml", body: `<?xml version="1.0"?><login><username>${userShort}</username><password>${PASSWORD}</password></login>`, auth: basicShort },
+    { ct: "text/xml",        body: `<?xml version="1.0"?><LoginRequest><Username>${userShort}</Username><Password>${PASSWORD}</Password></LoginRequest>`, auth: basicShort },
+    // No body — Basic auth only
+    { ct: "application/json", body: null, auth: basicShort },
+    { ct: "application/json", body: null, auth: basicFull  },
   ];
 
-  const loginUrl = SERVER + "/api/v1/login";
-  const bodies = [
-    { username: userShort, password: PASSWORD },
-    { username: USERNAME,  password: PASSWORD },
-  ];
-  // Also try credentials as query string
-  const qsUrls = [
-    `${loginUrl}?username=${encodeURIComponent(userShort)}&password=${encodeURIComponent(PASSWORD)}`,
-    `${loginUrl}?username=${encodeURIComponent(USERNAME)}&password=${encodeURIComponent(PASSWORD)}`,
-  ];
-
-  for (const extraHeaders of headerSets) {
-    for (const body of bodies) {
-      for (const auth of [basicShort, basicFull, null]) {
-        const req = new Request(loginUrl);
-        req.method = "POST";
-        req.headers = {
-          "Accept":       "application/json",
-          "Content-Type": "application/json",
-          "User-Agent":   "TempoMobile/4.0",
-          ...extraHeaders,
-        };
-        if (auth) req.headers["Authorization"] = auth;
-        req.body = JSON.stringify(body);
-        try {
-          const raw    = await req.loadString();
-          const status = req.response.statusCode;
-          let d; try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
-          const extras = Object.keys(extraHeaders).join(",") || "none";
-          console.log(`${status} headers=[${extras}] user=${body.username?.split("@")[0]} → ${raw.slice(0,60)}`);
-          if (status >= 200 && status < 300) {
-            const token = d.access_token || d.token || d.Token || d.accessToken ||
-                          d.jwt || d.id_token || d.sessionToken || d.authToken ||
-                          d.SessionId || d.sessionId || d.SessionID;
-            if (token) return { token, loginData: d };
-            const a = new Alert(); a.title = `200!`; a.message = raw.slice(0,500); a.addAction("OK"); await a.present();
-            return { token: null, loginData: d, raw };
-          }
-        } catch (_) {}
+  for (const { ct, body, auth } of attempts) {
+    const req = new Request(loginUrl);
+    req.method = "POST";
+    req.headers = { "Accept": "application/json, text/xml, */*", "Content-Type": ct, "User-Agent": "TempoMobile/4.0" };
+    if (auth) req.headers["Authorization"] = auth;
+    if (body) req.body = body;
+    try {
+      const raw    = await req.loadString();
+      const status = req.response.statusCode;
+      let d; try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
+      console.log(`${status} [${ct.split("/")[1]}] auth=${!!auth} → ${raw.slice(0,80)}`);
+      if (status >= 200 && status < 300) {
+        const token = d.access_token || d.token || d.Token || d.accessToken ||
+                      d.jwt || d.id_token || d.sessionToken || d.authToken ||
+                      d.SessionId || d.sessionId || d.SessionID;
+        if (token) return { token, loginData: d };
+        const a = new Alert(); a.title = `200! [${ct.split("/")[1]}]`; a.message = raw.slice(0,500); a.addAction("OK"); await a.present();
+        return { token: null, loginData: d, raw };
       }
-    }
-    // Query-string attempts (no body)
-    for (const url of qsUrls) {
-      const req = new Request(url);
-      req.method = "POST";
-      req.headers = { "Accept": "application/json", "User-Agent": "TempoMobile/4.0", ...extraHeaders };
-      try {
-        const raw    = await req.loadString();
-        const status = req.response.statusCode;
-        const extras = Object.keys(extraHeaders).join(",") || "none";
-        console.log(`${status} QS headers=[${extras}] → ${raw.slice(0,60)}`);
-        if (status >= 200 && status < 300) {
-          let d; try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
-          const token = d.access_token || d.token || d.Token || d.sessionId;
-          if (token) return { token, loginData: d };
-          const a = new Alert(); a.title = `200 QS!`; a.message = raw.slice(0,500); a.addAction("OK"); await a.present();
-          return { token: null, loginData: d, raw };
-        }
-      } catch (_) {}
-    }
+    } catch (_) {}
   }
   return null;
 }
