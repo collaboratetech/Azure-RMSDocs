@@ -7,8 +7,7 @@ const USERNAME = "william.hill@pmi.com";
 const PASSWORD = "50552441";
 const USER_ID  = 2956;
 
-const CLOCK_IN_HOUR  = 8;
-const CLOCK_OUT_HOUR = 16;
+const CLOCK_IN_HOUR = 8;    // 08:00 — matches captured marcaje
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let SESSION_COOKIE = "";
@@ -106,23 +105,20 @@ async function submitDay(day) {
   const ff = isoZ(day, 23);
 
   const existing = await apiGet(`/api/marcajes/${USER_ID}?fechaInicio=${fi}&fechaFin=${ff}`);
-  if (existing.ok && Array.isArray(existing.data) && existing.data.length >= 2) {
+  if (existing.ok && Array.isArray(existing.data) && existing.data.length >= 1) {
     console.log(`${dateStr}: ${existing.data.length} marcajes already — skipping`);
     return { ok: true, skipped: true };
   }
 
-  const inResult  = await apiPost("/api/marcajes", marcaje(isoZ(day, CLOCK_IN_HOUR),  2));
-  const outResult = await apiPost("/api/marcajes", marcaje(isoZ(day, CLOCK_OUT_HOUR), 1));
+  // Only one marcaje per day (sentidoId: 2) — matches captured app behaviour
+  const result = await apiPost("/api/marcajes", marcaje(isoZ(day, CLOCK_IN_HOUR), 2));
 
-  console.log(`${dateStr}: IN  ${inResult.status}  ${inResult.raw?.slice(0, 80)}`);
-  console.log(`${dateStr}: OUT ${outResult.status}  ${outResult.raw?.slice(0, 80)}`);
+  console.log(`${dateStr}: ${result.status}  ${result.raw?.slice(0, 80)}`);
 
-  if (!inResult.ok || !outResult.ok) {
-    const failed = !inResult.ok ? inResult : outResult;
-    const label  = !inResult.ok ? "IN" : "OUT";
+  if (!result.ok) {
     const a = new Alert();
-    a.title   = `❌ ${dateStr} ${label} (${failed.status})`;
-    a.message = failed.raw?.slice(0, 500) || "No response";
+    a.title   = `❌ ${dateStr} (${result.status})`;
+    a.message = result.raw?.slice(0, 500) || "No response";
     a.addAction("OK");
     await a.present();
     return { ok: false };
