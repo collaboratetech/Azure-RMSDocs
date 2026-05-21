@@ -1,6 +1,5 @@
 // eTempo Timesheet Automation — iOS Scriptable Script
 // Install: https://scriptable.app  (free on App Store)
-// Tap to run, or schedule weekly via iOS Shortcuts.
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const SERVER   = "https://philipmorris.softmachine.es:440";
@@ -8,8 +7,15 @@ const USERNAME = "william.hill@pmi.com";
 const PASSWORD = "50552441";
 const USER_ID  = 2956;
 
-const CLOCK_IN_HOUR  = 8;    // 08:00
-const CLOCK_OUT_HOUR = 16;   // 16:00  (8 hours later)
+const CLOCK_IN_HOUR  = 8;
+const CLOCK_OUT_HOUR = 16;
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let SESSION_COOKIE = "";
+
+const BASIC  = "Basic " + btoa(`${USERNAME}:${PASSWORD}`);
+const ACCEPT = "application/json,text/json,text/x-json,text/javascript,application/xml,text/xml";
+const UA     = "RestSharp/110.2.0.0";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -27,14 +33,35 @@ function isoZ(d, hour) {
   return r.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-const BASIC = "Basic " + btoa(`${USERNAME}:${PASSWORD}`);
+function baseHeaders(apiVersion) {
+  const h = {
+    "Accept":          ACCEPT,
+    "User-Agent":      UA,
+    "Authorization":   BASIC,
+    "Accept-Language": "en-GB,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection":      "keep-alive",
+    "api-version":     String(apiVersion),
+  };
+  if (SESSION_COOKIE) h["Cookie"] = SESSION_COOKIE;
+  return h;
+}
+
+function extractSessionCookie(response) {
+  // Scriptable exposes response headers via req.response.headers
+  const headers = response.headers || {};
+  const setCookie = headers["Set-Cookie"] || headers["set-cookie"] || "";
+  const match = setCookie.match(/ASP\.NET_SessionId=([^;]+)/);
+  if (match) SESSION_COOKIE = `ASP.NET_SessionId=${match[1]}`;
+}
 
 async function apiGet(path) {
   const req = new Request(SERVER + path);
   req.method = "GET";
-  req.headers = { "Accept": "application/json", "User-Agent": "TempoMobile/4.0", "Authorization": BASIC };
+  req.headers = baseHeaders(1);
   try {
     const raw = await req.loadString();
+    extractSessionCookie(req.response);
     const status = req.response.statusCode;
     let data; try { data = JSON.parse(raw); } catch (_) { data = raw; }
     return { ok: status >= 200 && status < 300, status, data, raw };
@@ -44,22 +71,23 @@ async function apiGet(path) {
 async function apiPost(path, body) {
   const req = new Request(SERVER + path);
   req.method = "POST";
-  req.headers = { "Accept": "application/json", "Content-Type": "application/json", "User-Agent": "TempoMobile/4.0", "Authorization": BASIC };
+  req.headers = { ...baseHeaders(2), "Content-Type": "application/json; charset=utf-8" };
   req.body = JSON.stringify(body);
   try {
     const raw = await req.loadString();
+    extractSessionCookie(req.response);
     const status = req.response.statusCode;
     let data; try { data = JSON.parse(raw); } catch (_) { data = raw; }
     return { ok: status >= 200 && status < 300, status, data, raw };
   } catch (e) { return { ok: false, status: 0, data: null, raw: e.message }; }
 }
 
-// ── Marcaje — exact structure from Proxyman capture ───────────────────────────
+// ── Marcaje template ──────────────────────────────────────────────────────────
 
 function marcaje(fecha, sentidoId) {
   return {
     uid:                    USER_ID,
-    sentidoId,              // 2 = clock-in, 1 = clock-out
+    sentidoId,
     fecha,
     estado:                 0,
     justificable:           0,
@@ -77,7 +105,6 @@ async function submitDay(day) {
   const fi = isoZ(day, 0);
   const ff = isoZ(day, 23);
 
-  // Skip days already filled
   const existing = await apiGet(`/api/marcajes/${USER_ID}?fechaInicio=${fi}&fechaFin=${ff}`);
   if (existing.ok && Array.isArray(existing.data) && existing.data.length >= 2) {
     console.log(`${dateStr}: ${existing.data.length} marcajes already — skipping`);
@@ -90,30 +117,28 @@ async function submitDay(day) {
   console.log(`${dateStr}: IN  ${inResult.status}  ${inResult.raw?.slice(0, 80)}`);
   console.log(`${dateStr}: OUT ${outResult.status}  ${outResult.raw?.slice(0, 80)}`);
 
-  // Show first failure in detail so we can see what the server says
   if (!inResult.ok || !outResult.ok) {
     const failed = !inResult.ok ? inResult : outResult;
     const label  = !inResult.ok ? "IN" : "OUT";
     const a = new Alert();
-    a.title   = `❌ ${dateStr} ${label} failed (${failed.status})`;
+    a.title   = `❌ ${dateStr} ${label} (${failed.status})`;
     a.message = failed.raw?.slice(0, 500) || "No response";
     a.addAction("OK");
     await a.present();
     return { ok: false };
   }
-
   return { ok: true };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  // Verify auth by fetching profile
+  // First GET establishes the session cookie
   const profile = await apiGet(`/api/perfiles/${USER_ID}`);
   if (!profile.ok) {
     const a = new Alert();
     a.title   = "❌ Auth failed";
-    a.message = `GET /api/perfiles/${USER_ID} → ${profile.status}\n${profile.raw?.slice(0, 200)}`;
+    a.message = `${profile.status}\n${profile.raw?.slice(0, 300)}`;
     a.addAction("OK");
     await a.present();
     Script.complete();
