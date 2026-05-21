@@ -51,7 +51,7 @@ from pathlib import Path
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 ETEMPO_URL  = os.getenv("ETEMPO_URL",  "https://philipmorris.softmachine.es/eTempo/")
-ETEMPO_MOB  = os.getenv("ETEMPO_MOB",  "https://philipmorris.softmachine.es/tempomobile/")
+ETEMPO_MOB  = os.getenv("ETEMPO_MOB",  "https://philipmorris.softmachine.es:440/")
 ETEMPO_USER = os.getenv("ETEMPO_USER", "William.hill@pmi.com")
 ETEMPO_PASS = os.getenv("ETEMPO_PASS", "50552441")
 
@@ -122,11 +122,9 @@ _LOGIN_PATHS = [
 # Additional base URLs to try when primary returns 500 (server startup crash)
 # Ordered by likelihood based on server probing and APK analysis
 _FALLBACK_MOB_BASES = [
-    "https://philipmorris.softmachine.es/tempomobile/",   # confirmed path, currently 500
-    "https://philipmorris.softmachine.es/TempoMobile/",   # case variant, same app
+    "https://philipmorris.softmachine.es:440/",            # port 440 (confirmed via iOS traffic capture)
+    "https://philipmorris.softmachine.es/tempomobile/",    # standard HTTPS fallback
     "https://philipmorris.softmachine.es/eTempo/api/mobile/",
-    "https://philipmorris.softmachine.es/eTempo/mobile/api/",
-    "https://philipmorris.softmachine.es/eTempo/app/api/",
 ]
 
 # Timesheet endpoint candidates

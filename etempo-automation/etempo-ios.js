@@ -7,8 +7,8 @@
 // and saves the timesheet via the eTempo mobile API.
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const SERVER   = "https://philipmorris.softmachine.es";
-const MOB_BASE = SERVER + "/tempomobile";       // mobile API root
+const SERVER   = "https://philipmorris.softmachine.es:440";
+const MOB_BASE = SERVER;                        // mobile API root (port 440)
 const USERNAME = "William.hill@pmi.com";
 const PASSWORD = "50552441";
 const WEEKLY_HOURS = 40;
