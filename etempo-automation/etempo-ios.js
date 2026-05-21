@@ -33,6 +33,12 @@ function isoZ(d, hour) {
   return r.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+// "2026-05-15T00:00:00" — no Z, used by anotaciones endpoint
+function localIso(d) {
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T00:00:00`;
+}
+
 function baseHeaders(apiVersion) {
   const h = {
     "Accept":          ACCEPT,
@@ -82,7 +88,7 @@ async function apiPost(path, body) {
   } catch (e) { return { ok: false, status: 0, data: null, raw: e.message }; }
 }
 
-// ── Marcaje template ──────────────────────────────────────────────────────────
+// ── Body builders ─────────────────────────────────────────────────────────────
 
 function marcaje(fecha, sentidoId) {
   return {
@@ -95,6 +101,20 @@ function marcaje(fecha, sentidoId) {
     origen:                 0,
     deshabilitarIncidencia: false,
     deshabilitarTarea:      false,
+  };
+}
+
+function anotacion(day) {
+  const fecha = localIso(day);
+  return {
+    ids:             [USER_ID],
+    origenAnotacion: 3,
+    tipoAnotacion:   7,
+    fechaInicio:     fecha,
+    fechaFin:        fecha,
+    horaInicio:      0,
+    horaFin:         0,
+    conceptoId:      16,   // TRABAJO EN REMOTO
   };
 }
 
@@ -113,16 +133,20 @@ async function submitDay(day) {
 
   const inResult  = await apiPost("/api/marcajes", marcaje(isoZ(day, CLOCK_IN_HOUR),  2));
   const outResult = await apiPost("/api/marcajes", marcaje(isoZ(day, CLOCK_OUT_HOUR), 3));
+  const annResult = await apiPost(`/api/anotaciones/${USER_ID}`, anotacion(day));
 
-  console.log(`${dateStr}: IN  ${inResult.status}  ${inResult.raw?.slice(0, 60)}`);
-  console.log(`${dateStr}: OUT ${outResult.status}  ${outResult.raw?.slice(0, 60)}`);
+  console.log(`${dateStr}: IN  ${inResult.status}  OUT ${outResult.status}  ANN ${annResult.status}`);
 
-  if (!inResult.ok || !outResult.ok) {
-    const failed = !inResult.ok ? inResult : outResult;
-    const label  = !inResult.ok ? "IN" : "OUT";
+  const failed = [
+    { r: inResult,  l: "IN"  },
+    { r: outResult, l: "OUT" },
+    { r: annResult, l: "ANN" },
+  ].find(x => !x.r.ok);
+
+  if (failed) {
     const a = new Alert();
-    a.title   = `❌ ${dateStr} ${label} (${failed.status})`;
-    a.message = failed.raw?.slice(0, 500) || "No response";
+    a.title   = `❌ ${dateStr} ${failed.l} (${failed.r.status})`;
+    a.message = failed.r.raw?.slice(0, 500) || "No response";
     a.addAction("OK");
     await a.present();
     return { ok: false };

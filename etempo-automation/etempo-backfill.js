@@ -48,6 +48,11 @@ function isoZ(d, hour) {
   return r.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+function localIso(d) {
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T00:00:00`;
+}
+
 // ── HTTP ──────────────────────────────────────────────────────────────────────
 let SESSION_COOKIE = "";
 const BASIC  = "Basic " + btoa(`${USERNAME}:${PASSWORD}`);
@@ -116,6 +121,20 @@ function marcaje(fecha, sentidoId) {
   };
 }
 
+function anotacion(day) {
+  const fecha = localIso(day);
+  return {
+    ids:             [USER_ID],
+    origenAnotacion: 3,
+    tipoAnotacion:   7,
+    fechaInicio:     fecha,
+    fechaFin:        fecha,
+    horaInicio:      0,
+    horaFin:         0,
+    conceptoId:      16,   // TRABAJO EN REMOTO
+  };
+}
+
 // ── Process one day ───────────────────────────────────────────────────────────
 async function processDay(day) {
   const dateStr = day.toISOString().slice(0, 10);
@@ -129,15 +148,19 @@ async function processDay(day) {
 
   const inRes  = await apiPost("/api/marcajes", marcaje(isoZ(day, CLOCK_IN_HOUR),  2));
   const outRes = await apiPost("/api/marcajes", marcaje(isoZ(day, CLOCK_OUT_HOUR), 3));
+  const annRes = await apiPost(`/api/anotaciones/${USER_ID}`, anotacion(day));
 
-  if (inRes.ok && outRes.ok) {
+  if (inRes.ok && outRes.ok && annRes.ok) {
     console.log(`${dateStr}: OK`);
     return "ok";
   }
 
-  const failed = !inRes.ok ? inRes : outRes;
-  const label  = !inRes.ok ? "IN" : "OUT";
-  console.log(`${dateStr}: FAIL ${label} ${failed.status} ${failed.raw?.slice(0, 60)}`);
+  const failPair = [
+    { r: inRes,  l: "IN"  },
+    { r: outRes, l: "OUT" },
+    { r: annRes, l: "ANN" },
+  ].find(x => !x.r.ok);
+  console.log(`${dateStr}: FAIL ${failPair.l} ${failPair.r.status} ${failPair.r.raw?.slice(0, 60)}`);
   return "fail";
 }
 
