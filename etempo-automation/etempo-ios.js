@@ -109,7 +109,6 @@ async function login() {
     { Username: USERNAME, Password: PASSWORD },
     { user:     USERNAME, pass:     PASSWORD },
     { login:    USERNAME, password: PASSWORD },
-    // IdentityServer ROPC
     { grant_type: "password", username: USERNAME, password: PASSWORD,
       scope: "openid offline_access", client_id: "TempoMobile" },
   ];
@@ -123,12 +122,19 @@ async function login() {
         const token = d.access_token || d.token || d.Token ||
                       d.accessToken  || d.jwt   || d.id_token;
         if (token) {
-          console.log("✓ Login OK at " + path);
-          return token;
+          const alert = new Alert();
+          alert.title = "✅ Endpoint found!";
+          alert.message = url;
+          alert.addAction("OK");
+          await alert.present();
+          return { token, endpoint: url };
         }
-        // Might be a session-cookie login with no token
-        console.log("Login OK (no token) at " + path);
-        return "session";
+        const alert = new Alert();
+        alert.title = "✅ Endpoint found (session auth)";
+        alert.message = url;
+        alert.addAction("OK");
+        await alert.present();
+        return { token: "session", endpoint: url };
       }
     }
   }
@@ -197,17 +203,19 @@ async function main() {
   console.log("Week: " + dateStr(thisMonday()));
 
   // Step 1 — Login
-  const token = await login();
-  if (!token) {
-    const msg = "Login failed. The /tempomobile API may be down. Check the server.";
-    console.error(msg);
-    notify("eTempo ✗", msg);
+  const loginResult = await login();
+  if (!loginResult) {
+    const a = new Alert();
+    a.title = "❌ Login failed";
+    a.message = "No endpoint responded on " + SERVER + "\nCheck your connection.";
+    a.addAction("OK");
+    await a.present();
     Script.complete();
     return;
   }
 
   // Step 2 — Fill week
-  const results = await fillWeek(token);
+  const results = await fillWeek(loginResult.token);
   const ok    = results.filter(r => r.ok).length;
   const total = results.length;
 
