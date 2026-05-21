@@ -11,7 +11,7 @@ const PASSWORD   = "50552441";
 const WEEKLY_HOURS = 40;
 
 // Set to true to run endpoint discovery instead of filling the timesheet
-const DISCOVER_MODE = false;
+const DISCOVER_MODE = true;
 
 // Timesheet endpoint candidates (GETted first to discover structure)
 const TIMESHEET_PATHS = [
