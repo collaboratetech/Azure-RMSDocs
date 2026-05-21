@@ -113,9 +113,20 @@ _LOGIN_PATHS = [
     "api/FormsLogin",
     "api/v1/users/login",
     "api/v1/Users/Login",
+    "api/v9/login",            # eTempo ModelServices API version 9
     "connect/token",           # IdentityServer ROPC
     "api/v1/token",
     "login",
+]
+
+# Additional base URLs to try when primary returns 500 (server startup crash)
+# Ordered by likelihood based on server probing and APK analysis
+_FALLBACK_MOB_BASES = [
+    "https://philipmorris.softmachine.es/tempomobile/",   # confirmed path, currently 500
+    "https://philipmorris.softmachine.es/TempoMobile/",   # case variant, same app
+    "https://philipmorris.softmachine.es/eTempo/api/mobile/",
+    "https://philipmorris.softmachine.es/eTempo/mobile/api/",
+    "https://philipmorris.softmachine.es/eTempo/app/api/",
 ]
 
 # Timesheet endpoint candidates
@@ -134,8 +145,19 @@ _TIMESHEET_PATHS = [
 def mobile_login(mob_base: str, username: str, password: str) -> str | None:
     """
     POST credentials to the mobile API and return the auth token.
+    Tries the primary base URL then falls back to alternate bases.
     Returns None if all endpoints fail.
     """
+    # Build list of bases to try (primary first, then fallbacks)
+    bases_to_try = [mob_base] + [b for b in _FALLBACK_MOB_BASES if b != mob_base]
+    for base in bases_to_try:
+        result = _try_mobile_login(base, username, password)
+        if result is not None:
+            return result
+    return None
+
+
+def _try_mobile_login(mob_base: str, username: str, password: str) -> str | None:
     _log("api", f"Trying mobile API login at {mob_base} …")
     b64 = base64.b64encode(f"{username}:{password}".encode()).decode()
 
