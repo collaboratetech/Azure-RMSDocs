@@ -132,48 +132,60 @@ async function login() {
   const basicFull  = "Basic " + btoa(`${USERNAME}:${PASSWORD}`);
   const basicShort = "Basic " + btoa(`${userShort}:${PASSWORD}`);
 
-  const loginUrls = [
-    SERVER + "/api/v3/login",
-    SERVER + "/api/v1/login",
-    SERVER + "/api/v3/account/login",
-    SERVER + "/api/v3/authenticate",
-    SERVER + "/api/v3/auth",
-    SERVER + "/api/v3/users/login",
-    SERVER + "/api/v3/session",
+  // Build attempts — username-in-path variants are the primary new theory:
+  // /api/v1/login returns JSON 404 "Recurso inexistente" suggesting the
+  // route exists but expects a path parameter like /api/v1/login/{username}
+  const attempts = [
+    // Username in path (POST with password in body)
+    { url: `/api/v1/login/${userShort}`,           body: { password: PASSWORD }, auth: basicShort },
+    { url: `/api/v1/login/${USERNAME}`,             body: { password: PASSWORD }, auth: basicFull  },
+    { url: `/api/v3/login/${userShort}`,           body: { password: PASSWORD }, auth: basicShort },
+    { url: `/api/v1/users/${userShort}/login`,     body: { password: PASSWORD }, auth: basicShort },
+    { url: `/api/v1/users/${userShort}/token`,     body: { password: PASSWORD }, auth: basicShort },
+    { url: `/api/v1/employees/${userShort}/login`, body: { password: PASSWORD }, auth: basicShort },
+    // GET with Basic auth only (some APIs authenticate via GET)
+    { url: `/api/v1/login`,           body: null, auth: basicFull,  method: "GET" },
+    { url: `/api/v1/login`,           body: null, auth: basicShort, method: "GET" },
+    { url: `/api/v3/login`,           body: null, auth: basicFull,  method: "GET" },
+    { url: `/api/v1/login/${userShort}`, body: null, auth: basicShort, method: "GET" },
+    // No-prefix variants
+    { url: `/v3/login`,               body: { username: userShort, password: PASSWORD }, auth: null },
+    { url: `/v1/login`,               body: { username: userShort, password: PASSWORD }, auth: null },
   ];
 
-  const attempts = [];
+  for (const { url, body, auth, method } of attempts) {
+    const fullUrl = SERVER + url;
+    const req = new Request(fullUrl);
+    req.method = method || "POST";
+    req.headers = {
+      "Accept":       "application/json",
+      "Content-Type": "application/json",
+      "User-Agent":   "TempoMobile/4.0",
+    };
+    if (auth) req.headers["Authorization"] = auth;
+    if (body) req.body = JSON.stringify(body);
+    try {
+      const raw    = await req.loadString();
+      const status = req.response.statusCode;
+      let d;
+      try { d = JSON.parse(raw); } catch (_) { d = { _raw: raw }; }
+      console.log(`${status} ${req.method} ${url} → ${raw.slice(0, 60)}`);
 
-  for (const url of loginUrls) {
-    // 1. Basic auth header only, no body
-    attempts.push({ url, body: null,                                     auth: basicFull  });
-    attempts.push({ url, body: null,                                     auth: basicShort });
-    // 2. Body only, no auth header
-    attempts.push({ url, body: { username: userShort, password: PASSWORD }, auth: null });
-    attempts.push({ url, body: { username: USERNAME,  password: PASSWORD }, auth: null });
-    // 3. Both header and body
-    attempts.push({ url, body: { username: userShort, password: PASSWORD }, auth: basicShort });
-    attempts.push({ url, body: { username: USERNAME,  password: PASSWORD }, auth: basicFull  });
-  }
+      if (status >= 200 && status < 300) {
+        const token = d.access_token || d.token || d.Token ||
+                      d.accessToken  || d.jwt   || d.id_token ||
+                      d.sessionToken || d.authToken ||
+                      d.SessionId    || d.sessionId || d.SessionID;
+        if (token) return { token, loginData: d };
 
-  for (const { url, body, auth } of attempts) {
-    const r = await tryLogin(url, body, auth);
-    if (!r) continue;
-    if (r.status >= 200 && r.status < 300) {
-      const d = r.d;
-      const token = d.access_token || d.token || d.Token ||
-                    d.accessToken  || d.jwt   || d.id_token ||
-                    d.sessionToken || d.authToken ||
-                    d.SessionId    || d.sessionId || d.SessionID;
-      if (token) return { token, loginData: d };
-
-      const a = new Alert();
-      a.title   = `200 at ${url.replace(SERVER,"")}`;
-      a.message = r.raw.slice(0, 500);
-      a.addAction("OK");
-      await a.present();
-      return { token: null, loginData: d, raw: r.raw };
-    }
+        const a = new Alert();
+        a.title   = `200 at ${url}`;
+        a.message = raw.slice(0, 500);
+        a.addAction("OK");
+        await a.present();
+        return { token: null, loginData: d, raw };
+      }
+    } catch (_) {}
   }
   return null;
 }
@@ -270,7 +282,7 @@ async function main() {
   if (!loginResult) {
     const a = new Alert();
     a.title   = "❌ Login failed";
-    a.message = LOGIN_URL + "\nCheck your connection.";
+    a.message = SERVER + "\nNo login endpoint responded. Check console for details.";
     a.addAction("OK");
     await a.present();
     Script.complete();
