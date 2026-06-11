@@ -29,7 +29,7 @@ function thisMonday() {
 
 function isoZ(d, hour) {
   const r = new Date(d);
-  r.setUTCHours(hour, 0, 0, 0);
+  r.setHours(hour, 0, 0, 0);   // local hour → correct UTC for server
   return r.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
@@ -37,6 +37,17 @@ function isoZ(d, hour) {
 function localIso(d) {
   const p = n => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T00:00:00`;
+}
+
+// Handles flat array or any wrapped response e.g. {"Items":[...]}
+function toArray(data) {
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === "object") {
+    for (const v of Object.values(data)) {
+      if (Array.isArray(v)) return v;
+    }
+  }
+  return null;  // null = unknown shape, do not skip
 }
 
 function baseHeaders(apiVersion) {
@@ -121,13 +132,15 @@ function anotacion(day) {
 // ── Submit one day ────────────────────────────────────────────────────────────
 
 async function submitDay(day) {
-  const dateStr = day.toISOString().slice(0, 10);
+  const dateStr = localIso(day).slice(0, 10);
   const fi = isoZ(day, 0);
   const ff = isoZ(day, 23);
 
   const existing = await apiGet(`/api/marcajes/${USER_ID}?fechaInicio=${fi}&fechaFin=${ff}`);
-  if (existing.ok && Array.isArray(existing.data) && existing.data.length >= 2) {
-    console.log(`${dateStr}: ${existing.data.length} marcajes already — skipping`);
+  console.log(`${dateStr}: GET marcajes → ${existing.status} ${existing.raw?.slice(0, 80)}`);
+  const list = toArray(existing.data);
+  if (existing.ok && list !== null && list.length >= 2) {
+    console.log(`${dateStr}: ${list.length} marcajes already — skipping`);
     return { ok: true, skipped: true };
   }
 
