@@ -28,9 +28,10 @@ function thisMonday() {
 }
 
 function isoZ(d, hour) {
-  const r = new Date(d);
-  r.setHours(hour, 0, 0, 0);   // local hour → correct UTC for server
-  return r.toISOString().replace(/\.\d{3}Z$/, "Z");
+  // Build timestamp from LOCAL date components so "T08:00:00Z" always means
+  // "8am" regardless of device timezone — matching what the app sends.
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(hour)}:00:00Z`;
 }
 
 // "2026-05-15T00:00:00" — no Z, used by anotaciones endpoint
@@ -39,15 +40,21 @@ function localIso(d) {
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T00:00:00`;
 }
 
-// Handles flat array or any wrapped response e.g. {"Items":[...]}
+// Find the marcaje list in any response shape.
+// Prefers an array whose items have marcaje fields (sentidoId / uid).
+// Falls back to the largest non-empty array, then any array, then null.
 function toArray(data) {
   if (Array.isArray(data)) return data;
   if (data && typeof data === "object") {
-    for (const v of Object.values(data)) {
-      if (Array.isArray(v)) return v;
-    }
+    const arrays = Object.values(data).filter(Array.isArray);
+    const isMarcaje = a => a.length > 0 &&
+      (a[0].sentidoId !== undefined || a[0].SentidoId !== undefined || a[0].uid !== undefined);
+    return arrays.find(isMarcaje)
+        || arrays.filter(a => a.length > 0).sort((a,b) => b.length - a.length)[0]
+        || arrays[0]
+        || null;
   }
-  return null;  // null = unknown shape, do not skip
+  return null;
 }
 
 function baseHeaders(apiVersion) {
@@ -137,8 +144,9 @@ async function submitDay(day) {
   const ff = isoZ(day, 23);
 
   const existing = await apiGet(`/api/marcajes/${USER_ID}?fechaInicio=${fi}&fechaFin=${ff}`);
-  console.log(`${dateStr}: GET marcajes → ${existing.status} ${existing.raw?.slice(0, 80)}`);
+  console.log(`${dateStr}: GET ${existing.status} → ${existing.raw}`);
   const list = toArray(existing.data);
+  console.log(`${dateStr}: toArray found ${list === null ? "null" : list.length} entries`);
   if (existing.ok && list !== null && list.length >= 2) {
     console.log(`${dateStr}: ${list.length} marcajes already — skipping`);
     return { ok: true, skipped: true };

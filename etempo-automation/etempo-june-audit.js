@@ -65,9 +65,8 @@ async function apiPost(path, body) {
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 function isoZ(d, hour) {
-  const r = new Date(d);
-  r.setHours(hour, 0, 0, 0);
-  return r.toISOString().replace(/\.\d{3}Z$/, "Z");
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(hour)}:00:00Z`;
 }
 
 function localIso(d) {
@@ -80,7 +79,13 @@ function dateKey(d) { return localIso(d).slice(0, 10); }
 function toArray(data) {
   if (Array.isArray(data)) return data;
   if (data && typeof data === "object") {
-    for (const v of Object.values(data)) if (Array.isArray(v)) return v;
+    const arrays = Object.values(data).filter(Array.isArray);
+    const isMarcaje = a => a.length > 0 &&
+      (a[0].sentidoId !== undefined || a[0].SentidoId !== undefined || a[0].uid !== undefined);
+    return arrays.find(isMarcaje)
+        || arrays.filter(a => a.length > 0).sort((a,b) => b.length - a.length)[0]
+        || arrays[0]
+        || null;
   }
   return null;
 }
