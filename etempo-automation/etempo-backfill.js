@@ -43,14 +43,18 @@ function isWorkingDay(d) {
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 function isoZ(d, hour) {
-  const p = n => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(hour)}:00:00Z`;
+  const r = new Date(d);
+  r.setHours(hour, 0, 0, 0);
+  return r.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 function localIso(d) {
   const p = n => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T00:00:00`;
 }
+
+function dayStart(d) { return localIso(d).slice(0, 10) + "T00:00:00Z"; }
+function dayEnd(d)   { return localIso(d).slice(0, 10) + "T23:59:59Z"; }
 
 function toArray(data) {
   if (Array.isArray(data)) return data;
@@ -150,11 +154,8 @@ function anotacion(day) {
 
 // ── Process one day ───────────────────────────────────────────────────────────
 async function processDay(day) {
-  const dateStr = day.toISOString().slice(0, 10);
-  const fi = isoZ(day, 0);
-  const ff = isoZ(day, 23);
-
-  const existing = await apiGet(`/api/marcajes/${USER_ID}?fechaInicio=${fi}&fechaFin=${ff}`);
+  const dateStr = localIso(day).slice(0, 10);
+  const existing = await apiGet(`/api/marcajes/${USER_ID}?fechaInicio=${dayStart(day)}&fechaFin=${dayEnd(day)}`);
   const list = toArray(existing.data);
   if (existing.ok && list !== null && list.length >= 2) {
     return "skip";

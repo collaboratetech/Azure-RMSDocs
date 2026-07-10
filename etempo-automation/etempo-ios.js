@@ -27,11 +27,12 @@ function thisMonday() {
   return d;
 }
 
+// Converts local hour to UTC — so clock-in at "8am Spain" becomes T06:00:00Z
+// and the app displays 08:00 Spain local.  Do NOT use for query ranges.
 function isoZ(d, hour) {
-  // Build timestamp from LOCAL date components so "T08:00:00Z" always means
-  // "8am" regardless of device timezone — matching what the app sends.
-  const p = n => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(hour)}:00:00Z`;
+  const r = new Date(d);
+  r.setHours(hour, 0, 0, 0);
+  return r.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 // "2026-05-15T00:00:00" — no Z, used by anotaciones endpoint
@@ -39,6 +40,11 @@ function localIso(d) {
   const p = n => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T00:00:00`;
 }
+
+// Query range helpers — always anchored to midnight/23:59 on the LOCAL calendar
+// date, so the range never drifts to the previous/next UTC day.
+function dayStart(d) { return localIso(d).slice(0, 10) + "T00:00:00Z"; }
+function dayEnd(d)   { return localIso(d).slice(0, 10) + "T23:59:59Z"; }
 
 // Find the marcaje list in any response shape.
 // Prefers an array whose items have marcaje fields (sentidoId / uid).
@@ -140,10 +146,7 @@ function anotacion(day) {
 
 async function submitDay(day) {
   const dateStr = localIso(day).slice(0, 10);
-  const fi = isoZ(day, 0);
-  const ff = isoZ(day, 23);
-
-  const existing = await apiGet(`/api/marcajes/${USER_ID}?fechaInicio=${fi}&fechaFin=${ff}`);
+  const existing = await apiGet(`/api/marcajes/${USER_ID}?fechaInicio=${dayStart(day)}&fechaFin=${dayEnd(day)}`);
   console.log(`${dateStr}: GET ${existing.status} → ${existing.raw}`);
   const list = toArray(existing.data);
   console.log(`${dateStr}: toArray found ${list === null ? "null" : list.length} entries`);

@@ -65,9 +65,13 @@ async function apiPost(path, body) {
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 function isoZ(d, hour) {
-  const p = n => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(hour)}:00:00Z`;
+  const r = new Date(d);
+  r.setHours(hour, 0, 0, 0);
+  return r.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
+
+function dayStart(d) { return localIso(d).slice(0, 10) + "T00:00:00Z"; }
+function dayEnd(d)   { return localIso(d).slice(0, 10) + "T23:59:59Z"; }
 
 function localIso(d) {
   const p = n => String(n).padStart(2, "0");
@@ -127,7 +131,7 @@ async function main() {
 
   for (const day of days) {
     const key = dateKey(day);
-    const existing = await apiGet(`/api/marcajes/${USER_ID}?fechaInicio=${isoZ(day,0)}&fechaFin=${isoZ(day,23)}`);
+    const existing = await apiGet(`/api/marcajes/${USER_ID}?fechaInicio=${dayStart(day)}&fechaFin=${dayEnd(day)}`);
     const list = toArray(existing.data);
     const count = list ? list.length : 0;
 
