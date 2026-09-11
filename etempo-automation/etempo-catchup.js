@@ -215,12 +215,23 @@ async function main() {
         filled.push(key);
         console.log(`${key}: ✓ IN ${inR.status}  OUT ${outR.status}  ANN ${annR.status}`);
       } else {
-        const bad = [inR, outR, annR].find(r => !r.ok);
-        errors.push(`${key} (${bad.status})`);
-        console.log(`${key}: ✗ ${bad.status} ${bad.raw?.slice(0, 80)}`);
+        // Name the call that broke — "IN" / "OUT" hit /api/marcajes, "ANN" hits
+        // /api/anotaciones, so the label alone narrows the cause.
+        const bad = [
+          { r: inR,  l: "IN  (POST /api/marcajes)" },
+          { r: outR, l: "OUT (POST /api/marcajes)" },
+          { r: annR, l: `ANN (POST /api/anotaciones/${USER_ID})` },
+        ].find(x => !x.r.ok);
+
+        errors.push(`${key} ${bad.l} → ${bad.r.status}`);
+        console.log(`${key}: ✗ ${bad.l} ${bad.r.status} ${bad.r.raw?.slice(0, 200)}`);
+        console.log(`   sent: ${JSON.stringify(bad.l.startsWith("ANN") ? anotacion(day)
+                       : marcaje(isoZ(day, bad.l.startsWith("IN") ? CLOCK_IN_HOUR : CLOCK_OUT_HOUR),
+                                 bad.l.startsWith("IN") ? 2 : 3))}`);
+
         const a = new Alert();
-        a.title   = `❌ ${key} failed (${bad.status})`;
-        a.message = bad.raw?.slice(0, 500) || "no response";
+        a.title   = `❌ ${key} — ${bad.l.split(" ")[0]} (${bad.r.status})`;
+        a.message = `${bad.l}\n\n${bad.r.raw?.slice(0, 400) || "no response"}`;
         a.addAction("OK"); await a.present();
         break;   // stop on first error
       }
