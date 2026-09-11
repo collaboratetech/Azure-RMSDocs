@@ -155,15 +155,31 @@ function workingDays() {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
-  const profile = await apiGet(`/api/perfiles/${USER_ID}`);
-  if (!profile.ok) {
-    const a = new Alert(); a.title = "❌ Auth failed";
-    a.message = `${profile.status}\n${profile.raw?.slice(0, 300)}`;
+  const days = workingDays();
+
+  // Warm-up: establishes the session cookie and proves auth, using the same
+  // endpoint the fill logic depends on. (The old /api/perfiles/ probe was never
+  // confirmed against the real API and aborted the run when it 404'd.)
+  const probeDay = days[days.length - 1];
+  const probe = await apiGet(
+    `/api/marcajes/${USER_ID}?fechaInicio=${dayStart(probeDay)}&fechaFin=${dayEnd(probeDay)}`);
+
+  if (probe.status === 401 || probe.status === 403) {
+    const a = new Alert(); a.title = `❌ Auth rejected (${probe.status})`;
+    a.message = `${probe.raw?.slice(0, 300)}`;
     a.addAction("OK"); await a.present();
     Script.complete(); return;
   }
-
-  const days = workingDays();
+  if (!probe.ok) {
+    // 404 here means the path itself is wrong, not "no entries" — if we carried
+    // on, every day would look empty and we'd post 40+ duplicate days.
+    const a = new Alert(); a.title = `❌ Cannot reach marcajes (${probe.status})`;
+    a.message = `GET /api/marcajes/${USER_ID}\n\n` +
+                `${probe.raw?.slice(0, 250) || "no response"}\n\n` +
+                `Run etempo-diag.js and send the output.`;
+    a.addAction("OK"); await a.present();
+    Script.complete(); return;
+  }
   const filled = [], partial = [], errors = [];
   let skipped = 0;
 
@@ -173,13 +189,15 @@ async function main() {
     const key = dateKey(day);
     const existing = await apiGet(`/api/marcajes/${USER_ID}?fechaInicio=${dayStart(day)}&fechaFin=${dayEnd(day)}`);
 
-    if (!existing.ok) {
+    // The warm-up proved this path works, so a 404 now means "no records for
+    // that day" rather than a bad URL — treat it as empty and fill it.
+    if (!existing.ok && existing.status !== 404) {
       errors.push(`${key} (GET ${existing.status})`);
       console.log(`${key}: GET failed ${existing.status} — stopping`);
       break;
     }
 
-    const list  = toArray(existing.data);
+    const list  = existing.ok ? toArray(existing.data) : null;
     const count = list ? list.length : 0;
 
     if (count >= 2) {
