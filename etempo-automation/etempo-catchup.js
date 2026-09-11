@@ -15,6 +15,10 @@ const LOOKBACK_DAYS  = 60;   // includes today
 const CLOCK_IN_HOUR  = 8;
 const CLOCK_OUT_HOUR = 17;
 
+// A refused day is skipped rather than fatal, so one closed period doesn't
+// block the rest of the window. This caps a run where everything is refused.
+const MAX_REFUSALS = 25;
+
 // ── Madrid public holidays ────────────────────────────────────────────────────
 // VERIFY against the official BOE / Comunidad de Madrid calendar each year,
 // and add the next year's dates before the window rolls into it.
@@ -122,6 +126,17 @@ function toArray(data) {
   return null;
 }
 
+// Pulls the human-readable message out of an error response, e.g.
+// {"Message":"Recurso inexistente..."} → "Recurso inexistente...".
+function serverMsg(r) {
+  const d = r.data;
+  if (d && typeof d === "object") {
+    const m = d.Message || d.message || d.error || d.Error;
+    if (m) return String(m);
+  }
+  return String(r.raw || "").slice(0, 120);
+}
+
 // ── Body builders ─────────────────────────────────────────────────────────────
 function marcaje(fecha, sentidoId) {
   return { uid: USER_ID, sentidoId, fecha, estado: 0, justificable: 0,
@@ -180,8 +195,8 @@ async function main() {
     a.addAction("OK"); await a.present();
     Script.complete(); return;
   }
-  const filled = [], partial = [], errors = [];
-  let skipped = 0;
+  const filled = [], partial = [], refused = [], incomplete = [];
+  let skipped = 0, aborted = "";
 
   console.log(`Window: ${dateKey(days[0])} → ${dateKey(days[days.length - 1])} (${days.length} working days)`);
 
@@ -192,9 +207,9 @@ async function main() {
     // The warm-up proved this path works, so a 404 now means "no records for
     // that day" rather than a bad URL — treat it as empty and fill it.
     if (!existing.ok && existing.status !== 404) {
-      errors.push(`${key} (GET ${existing.status})`);
-      console.log(`${key}: GET failed ${existing.status} — stopping`);
-      break;
+      refused.push(`${key} GET ${existing.status}: ${serverMsg(existing)}`);
+      console.log(`${key}: GET failed ${existing.status} ${serverMsg(existing)}`);
+      continue;
     }
 
     const list  = existing.ok ? toArray(existing.data) : null;
@@ -203,38 +218,39 @@ async function main() {
     if (count >= 2) {
       skipped++;
       console.log(`${key}: ${count} marcajes — skip`);
+      continue;
+    }
+
+    // count 1 is a half-filled day: record it, but still complete the day.
+    if (count === 1) partial.push(key);
+
+    // Clock-in goes first and alone. If the server refuses this day outright
+    // (closed period, no contract, etc.) it surfaces here — so don't pile OUT
+    // and ANN on top of a day it has already rejected.
+    const inR = await apiPost("/api/marcajes", marcaje(isoZ(day, CLOCK_IN_HOUR), 2));
+    if (!inR.ok) {
+      refused.push(`${key} IN ${inR.status}: ${serverMsg(inR)}`);
+      console.log(`${key}: ✗ IN ${inR.status} ${serverMsg(inR)}`);
+      console.log(`   sent: ${JSON.stringify(marcaje(isoZ(day, CLOCK_IN_HOUR), 2))}`);
+      if (refused.length >= MAX_REFUSALS) { aborted = key; break; }
+      await new Promise(r => Timer.schedule(300, false, r));
+      continue;   // skip this day, keep going — later days may still be open
+    }
+
+    const outR = await apiPost("/api/marcajes", marcaje(isoZ(day, CLOCK_OUT_HOUR), 3));
+    const annR = await apiPost(`/api/anotaciones/${USER_ID}`, anotacion(day));
+
+    if (outR.ok && annR.ok) {
+      filled.push(key);
+      console.log(`${key}: ✓ IN ${inR.status}  OUT ${outR.status}  ANN ${annR.status}`);
     } else {
-      // count 1 is a half-filled day: record it, but still complete the day.
-      if (count === 1) partial.push(key);
-
-      const inR  = await apiPost("/api/marcajes", marcaje(isoZ(day, CLOCK_IN_HOUR),  2));
-      const outR = await apiPost("/api/marcajes", marcaje(isoZ(day, CLOCK_OUT_HOUR), 3));
-      const annR = await apiPost(`/api/anotaciones/${USER_ID}`, anotacion(day));
-
-      if (inR.ok && outR.ok && annR.ok) {
-        filled.push(key);
-        console.log(`${key}: ✓ IN ${inR.status}  OUT ${outR.status}  ANN ${annR.status}`);
-      } else {
-        // Name the call that broke — "IN" / "OUT" hit /api/marcajes, "ANN" hits
-        // /api/anotaciones, so the label alone narrows the cause.
-        const bad = [
-          { r: inR,  l: "IN  (POST /api/marcajes)" },
-          { r: outR, l: "OUT (POST /api/marcajes)" },
-          { r: annR, l: `ANN (POST /api/anotaciones/${USER_ID})` },
-        ].find(x => !x.r.ok);
-
-        errors.push(`${key} ${bad.l} → ${bad.r.status}`);
-        console.log(`${key}: ✗ ${bad.l} ${bad.r.status} ${bad.r.raw?.slice(0, 200)}`);
-        console.log(`   sent: ${JSON.stringify(bad.l.startsWith("ANN") ? anotacion(day)
-                       : marcaje(isoZ(day, bad.l.startsWith("IN") ? CLOCK_IN_HOUR : CLOCK_OUT_HOUR),
-                                 bad.l.startsWith("IN") ? 2 : 3))}`);
-
-        const a = new Alert();
-        a.title   = `❌ ${key} — ${bad.l.split(" ")[0]} (${bad.r.status})`;
-        a.message = `${bad.l}\n\n${bad.r.raw?.slice(0, 400) || "no response"}`;
-        a.addAction("OK"); await a.present();
-        break;   // stop on first error
-      }
+      // Clock-in landed but something after it didn't — the day is now partial
+      // and needs a look, which is different from a day that was refused whole.
+      const bad = !outR.ok
+        ? { l: "OUT", r: outR }
+        : { l: `ANN (/api/anotaciones/${USER_ID})`, r: annR };
+      incomplete.push(`${key} ${bad.l} ${bad.r.status}: ${serverMsg(bad.r)}`);
+      console.log(`${key}: ⚠ IN ok but ${bad.l} ${bad.r.status} ${serverMsg(bad.r)}`);
     }
 
     await new Promise(r => Timer.schedule(300, false, r));
@@ -245,12 +261,31 @@ async function main() {
     `✅ Already done: ${skipped}`,
     `📝 Filled now:   ${filled.length}`,
   ];
-  if (filled.length)  lines.push(`   ${filled.join(", ")}`);
-  if (partial.length) lines.push(`⚠️  Had 1 marcaje: ${partial.join(", ")}`);
-  if (errors.length)  lines.push(`❌ Errors: ${errors.join(", ")}`);
+  if (filled.length)  lines.push(`   ${filled[0]} … ${filled[filled.length - 1]}`);
+  if (partial.length) lines.push(`\n⚠️  Had 1 marcaje: ${partial.join(", ")}`);
+
+  if (incomplete.length) {
+    lines.push(`\n⚠️  Left partial (${incomplete.length}) — clock-in posted, rest failed:`);
+    incomplete.slice(0, 5).forEach(e => lines.push(`   ${e}`));
+  }
+
+  // The refused range is the useful signal: if it is a contiguous block of the
+  // oldest days, the server is closing off past periods rather than erroring.
+  if (refused.length) {
+    const first = refused[0].split(" ")[0];
+    const last  = refused[refused.length - 1].split(" ")[0];
+    lines.push(`\n❌ Refused (${refused.length}): ${first} … ${last}`);
+    lines.push(`   ${refused[0].split(": ").slice(1).join(": ")}`);
+  }
+  if (aborted) lines.push(`\n🛑 Stopped at ${aborted} after ${MAX_REFUSALS} refusals.`);
+
+  console.log(`\n── Refused days ──`);
+  refused.forEach(e => console.log(e));
 
   const a = new Alert();
-  a.title   = errors.length ? "⚠️ Stopped on error" : "✅ Catch-up complete";
+  a.title   = refused.length || incomplete.length
+    ? `⚠️ Filled ${filled.length}, refused ${refused.length}`
+    : "✅ Catch-up complete";
   a.message = lines.join("\n");
   a.addAction("OK");
   await a.present();
