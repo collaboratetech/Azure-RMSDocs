@@ -85,10 +85,15 @@ function extractSessionCookie(response) {
   if (match) SESSION_COOKIE = `ASP.NET_SessionId=${match[1]}`;
 }
 
-async function apiGet(path) {
+// GETs were pinned to api-version 1, which the server has since retired — it
+// answers 404 "Recurso inexistente" because the versioned route stops
+// resolving. Start on 2 and fall back once, latching whichever answers.
+let GET_VERSION = 2;
+
+async function rawGet(path, version) {
   const req = new Request(SERVER + path);
   req.method = "GET";
-  req.headers = baseHeaders(1);
+  req.headers = baseHeaders(version);
   try {
     const raw = await req.loadString();
     extractSessionCookie(req.response);
@@ -96,6 +101,22 @@ async function apiGet(path) {
     let data; try { data = JSON.parse(raw); } catch (_) { data = raw; }
     return { ok: status >= 200 && status < 300, status, data, raw };
   } catch (e) { return { ok: false, status: 0, data: null, raw: e.message }; }
+}
+
+async function apiGet(path) {
+  const r = await rawGet(path, GET_VERSION);
+  if (r.status !== 404) return r;
+
+  // A 404 here is ambiguous: retired version, or genuinely no such path. Try
+  // the other version once — if it answers, the version was the problem.
+  const alt = GET_VERSION === 2 ? 1 : 2;
+  const r2  = await rawGet(path, alt);
+  if (r2.ok) {
+    console.log(`api-version ${GET_VERSION} → 404, switching GETs to ${alt}`);
+    GET_VERSION = alt;
+    return r2;
+  }
+  return r;
 }
 
 async function apiPost(path, body) {

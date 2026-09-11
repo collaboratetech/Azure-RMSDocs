@@ -66,9 +66,15 @@ function extractCookie(res) {
   if (m) SESSION_COOKIE = `ASP.NET_SessionId=${m[1]}`;
 }
 
-async function apiGet(path) {
+// GETs used api-version 1 historically; the server appears to have retired it,
+// answering 404 "Recurso inexistente" because the versioned route no longer
+// resolves. Detected at warm-up rather than hardcoded, so this survives the
+// server moving again.
+let GET_VERSION = 2;
+
+async function apiGet(path, version) {
   const req = new Request(SERVER + path);
-  req.method = "GET"; req.headers = baseHeaders(1);
+  req.method = "GET"; req.headers = baseHeaders(version || GET_VERSION);
   try {
     const raw = await req.loadString();
     extractCookie(req.response);
@@ -172,12 +178,21 @@ function workingDays() {
 async function main() {
   const days = workingDays();
 
-  // Warm-up: establishes the session cookie and proves auth, using the same
-  // endpoint the fill logic depends on. (The old /api/perfiles/ probe was never
-  // confirmed against the real API and aborted the run when it 404'd.)
+  // Warm-up: establishes the session cookie, proves auth, and works out which
+  // api-version the GET route answers on — trying each in turn rather than
+  // assuming, since a retired version 404s in a way that looks like a bad path.
   const probeDay = days[days.length - 1];
-  const probe = await apiGet(
-    `/api/marcajes/${USER_ID}?fechaInicio=${dayStart(probeDay)}&fechaFin=${dayEnd(probeDay)}`);
+  const probeUrl =
+    `/api/marcajes/${USER_ID}?fechaInicio=${dayStart(probeDay)}&fechaFin=${dayEnd(probeDay)}`;
+
+  let probe = null;
+  for (const v of [2, 1]) {
+    const r = await apiGet(probeUrl, v);
+    console.log(`warm-up api-version ${v} → ${r.status}`);
+    if (r.ok) { GET_VERSION = v; probe = r; break; }
+    if (!probe) probe = r;                               // keep the first failure
+    if (r.status === 401 || r.status === 403) break;     // auth, not versioning
+  }
 
   if (probe.status === 401 || probe.status === 403) {
     const a = new Alert(); a.title = `❌ Auth rejected (${probe.status})`;
@@ -186,15 +201,16 @@ async function main() {
     Script.complete(); return;
   }
   if (!probe.ok) {
-    // 404 here means the path itself is wrong, not "no entries" — if we carried
-    // on, every day would look empty and we'd post 40+ duplicate days.
+    // Neither version answered — the path itself is wrong. If we carried on,
+    // every day would look empty and we'd post 40+ duplicate days.
     const a = new Alert(); a.title = `❌ Cannot reach marcajes (${probe.status})`;
-    a.message = `GET /api/marcajes/${USER_ID}\n\n` +
-                `${probe.raw?.slice(0, 250) || "no response"}\n\n` +
-                `Run etempo-diag.js and send the output.`;
+    a.message = `GET /api/marcajes/${USER_ID}\n` +
+                `tried api-version 2 and 1\n\n` +
+                `${probe.raw?.slice(0, 250) || "no response"}`;
     a.addAction("OK"); await a.present();
     Script.complete(); return;
   }
+  console.log(`Using api-version ${GET_VERSION} for GETs.`);
   const filled = [], partial = [], refused = [], incomplete = [];
   let skipped = 0, aborted = "";
 

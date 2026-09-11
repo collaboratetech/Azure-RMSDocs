@@ -69,13 +69,20 @@ async function main() {
   results.push(await probe("marcajes (api-version 2)",
     `/api/marcajes/${USER_ID}?fechaInicio=${t}T00:00:00Z&fechaFin=${t}T23:59:59Z`, 2));
 
-  const lines = results.map(r => `${r.code || "ERR"}  ${r.label}`);
-  const marcajesOK = results.some(r => r.label.startsWith("marcajes") && r.code >= 200 && r.code < 300);
+  const ok = r => r && r.code >= 200 && r.code < 300;
+  const lines = results.map(r => `${ok(r) ? "✅" : "❌"} ${r.code || "ERR"}  ${r.label}`);
+
+  // Report each version on its own. An earlier version of this script used
+  // .some() across both, so a v1 failure was masked by a v2 success — which is
+  // exactly the case the fill scripts trip over, since they pick one version.
+  const v1 = results.find(r => r.label === "marcajes (today)");
+  const v2 = results.find(r => r.label === "marcajes (api-version 2)");
 
   lines.push("");
-  lines.push(marcajesOK
-    ? "✅ marcajes reachable — fill scripts can run."
-    : "❌ marcajes NOT reachable — see console for bodies.");
+  if (ok(v1) && ok(v2))       lines.push("✅ marcajes answers on api-version 1 and 2.");
+  else if (ok(v2))            lines.push("⚠️ marcajes answers on api-version 2 ONLY.\nGETs must send api-version: 2.");
+  else if (ok(v1))            lines.push("⚠️ marcajes answers on api-version 1 ONLY.\nGETs must send api-version: 1.");
+  else                        lines.push("❌ marcajes answers on NEITHER version — see console.");
 
   const a = new Alert();
   a.title   = "eTempo endpoint probe";
